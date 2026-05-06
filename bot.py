@@ -4,6 +4,7 @@ import shutil
 import asyncio
 import logging
 import tempfile
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List, Dict, Optional
@@ -17,6 +18,13 @@ from PIL import Image
 import img2pdf
 from pypdf import PdfWriter, PdfReader
 
+# PDF -> JPG uchun qo‘shimcha (agar mavjud bo‘lsa)
+try:
+    from pdf2image import convert_from_path
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+
 # ========== TOKEN ==========
 def get_token():
     if Path("token.txt").exists():
@@ -28,7 +36,7 @@ if not BOT_TOKEN:
     raise ValueError("Token topilmadi")
 
 # ========== SOZLAMALAR ==========
-BASE_DIR = Path(tempfile.gettempdir()) / "full_bot_fixed"
+BASE_DIR = Path(tempfile.gettempdir()) / "full_bot_converter"
 TEMP_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -44,10 +52,10 @@ session = AiohttpSession(timeout=API_TIMEOUT)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"), session=session)
 dp = Dispatcher()
 
-# ========== TILLAR (HTML TAGLAR TO‘G‘RILANGAN) ==========
+# ========== TILLAR ==========
 TEXTS = {
     "uz": {
-        "start": "📦 <b>To‘liq funksiyali bot</b>\n\n• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n• Rasmlar → bitta PDF\n• DOCX/PPTX ichidagi rasmlar siqilishi mumkin.\n• Natija – ZIP yoki bitta PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – 3 ta faylda avtomatik ishlov\n🔹 /pack – qo‘lda ishlov\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;parol&gt;\n🔹 /lang uz|en|ru\n\nHozirgi rejim: fast, format: zip, sifat: 85",
+        "start": "📦 <b>To‘liq funksiyali bot</b>\n\n• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n• Rasmlar → bitta PDF\n• DOCX/PPTX ichidagi rasmlar siqilishi mumkin.\n• Natija – ZIP yoki bitta PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – 3 ta faylda avtomatik ishlov\n🔹 /pack – qo‘lda ishlov\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;parol&gt;\n🔹 /lang uz|en|ru\n🔹 /convert docx pdf  (va boshqa konvertatsiyalar)\n\nHozirgi rejim: fast, format: zip, sifat: 85",
         "file_saved": "✅ {} saqlandi. Jami: {} ta fayl.",
         "no_files": "📭 Saqlangan fayl yo‘q.",
         "processing": "⏳ {} ta fayl qayta ishlanmoqda (rejim: {}, format: {})...",
@@ -68,10 +76,15 @@ TEXTS = {
         "list_total": "\n📦 Umumiy hajm: {}",
         "stats": "📊 Statistika:\n⏳ Yuklangan: {} fayl, {}\n📦 Qayta ishlangan: {} fayl, {}",
         "progress": "⏳ Qayta ishlash: {:.1f}%",
-        "only_images_pdf": "⚠️ Bitta PDF formati faqat rasm va PDF fayllar qatnashganda ishlaydi. DOCX/PPTX bo‘lsa ZIP qilinadi."
+        "only_images_pdf": "⚠️ Bitta PDF formati faqat rasm va PDF fayllar qatnashganda ishlaydi. DOCX/PPTX bo‘lsa ZIP qilinadi.",
+        "convert_usage": "❌ Ishlating: /convert &lt;from&gt; &lt;to&gt;\nMumkin: docx pdf, pptx pdf, pdf jpg, jpg pdf\nKerakli dastur: LibreOffice, pdf2image (PDF→JPG uchun)",
+        "convert_start": "⏳ {} ta fayl konvertatsiya qilinmoqda ({} → {})...",
+        "convert_success": "✅ {} → {} konvertatsiya bajarildi. {} ta yangi fayl qo‘shildi.",
+        "libreoffice_missing": "❌ LibreOffice topilmadi! Iltimos uni o‘rnating:\nsudo apt install libreoffice-writer libreoffice-impress\nYoki konvertatsiya uchun boshqa formatlarni tanlang.",
+        "pdf2image_missing": "❌ PDF→JPG konvertatsiyasi uchun pdf2image kerak.\npip install pdf2image"
     },
     "en": {
-        "start": "📦 <b>Full-featured bot</b>\n\n• I accept PDF, DOCX, PPTX and images.\n• Images → single PDF\n• DOCX/PPTX can compress internal images.\n• Output – ZIP or single PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – auto process after 3 files\n🔹 /pack – manual process\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;password&gt;\n🔹 /lang uz|en|ru\n\nCurrent mode: fast, format: zip, quality: 85",
+        "start": "📦 <b>Full-featured bot</b>\n\n• I accept PDF, DOCX, PPTX and images.\n• Images → single PDF\n• DOCX/PPTX can compress internal images.\n• Output – ZIP or single PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – auto process after 3 files\n🔹 /pack – manual process\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;password&gt;\n🔹 /lang uz|en|ru\n🔹 /convert docx pdf\n\nCurrent mode: fast, format: zip, quality: 85",
         "file_saved": "✅ {} saved. Total: {} files.",
         "no_files": "📭 No files saved.",
         "processing": "⏳ Processing {} files (mode: {}, format: {})...",
@@ -92,10 +105,15 @@ TEXTS = {
         "list_total": "\n📦 Total size: {}",
         "stats": "📊 Statistics:\n⏳ Uploaded: {} files, {}\n📦 Processed: {} files, {}",
         "progress": "⏳ Progress: {:.1f}%",
-        "only_images_pdf": "⚠️ Single PDF format works only when there are only images and PDFs. DOCX/PPTX will be zipped instead."
+        "only_images_pdf": "⚠️ Single PDF format works only when there are only images and PDFs. DOCX/PPTX will be zipped instead.",
+        "convert_usage": "❌ Usage: /convert &lt;from&gt; &lt;to&gt;\nPossible: docx pdf, pptx pdf, pdf jpg, jpg pdf\nNeeds: LibreOffice, pdf2image (for PDF→JPG)",
+        "convert_start": "⏳ Converting {} files ({} → {})...",
+        "convert_success": "✅ {} → {} conversion done. {} new files added.",
+        "libreoffice_missing": "❌ LibreOffice not found! Please install it:\nsudo apt install libreoffice-writer libreoffice-impress",
+        "pdf2image_missing": "❌ PDF→JPG conversion requires pdf2image.\npip install pdf2image"
     },
     "ru": {
-        "start": "📦 <b>Полнофункциональный бот</b>\n\n• Принимаю PDF, DOCX, PPTX и изображения.\n• Изображения → один PDF\n• DOCX/PPTX могут сжимать внутренние изображения.\n• Результат – ZIP или один PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – автообработка после 3 файлов\n🔹 /pack – ручная обработка\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;пароль&gt;\n🔹 /lang uz|en|ru\n\nТекущий режим: fast, формат: zip, качество: 85",
+        "start": "📦 <b>Полнофункциональный бот</b>\n\n• Принимаю PDF, DOCX, PPTX и изображения.\n• Изображения → один PDF\n• DOCX/PPTX могут сжимать внутренние изображения.\n• Результат – ZIP или один PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – автообработка после 3 файлов\n🔹 /pack – ручная обработка\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;пароль&gt;\n🔹 /lang uz|en|ru\n🔹 /convert docx pdf\n\nТекущий режим: fast, формат: zip, качество: 85",
         "file_saved": "✅ {} сохранён. Всего: {} файлов.",
         "no_files": "📭 Нет сохранённых файлов.",
         "processing": "⏳ Обработка {} файлов (режим: {}, формат: {})...",
@@ -116,12 +134,16 @@ TEXTS = {
         "list_total": "\n📦 Общий размер: {}",
         "stats": "📊 Статистика:\n⏳ Загружено: {} файлов, {}\n📦 Обработано: {} файлов, {}",
         "progress": "⏳ Прогресс: {:.1f}%",
-        "only_images_pdf": "⚠️ Формат одного PDF работает только если есть только изображения и PDF. DOCX/PPTX будут упакованы в ZIP."
+        "only_images_pdf": "⚠️ Формат одного PDF работает только если есть только изображения и PDF. DOCX/PPTX будут упакованы в ZIP.",
+        "convert_usage": "❌ Использование: /convert &lt;from&gt; &lt;to&gt;\nВозможно: docx pdf, pptx pdf, pdf jpg, jpg pdf\nТребуется: LibreOffice, pdf2image (для PDF→JPG)",
+        "convert_start": "⏳ Конвертация {} файлов ({} → {})...",
+        "convert_success": "✅ {} → {} конвертация выполнена. Добавлено {} новых файлов.",
+        "libreoffice_missing": "❌ LibreOffice не найден! Установите:\nsudo apt install libreoffice-writer libreoffice-impress",
+        "pdf2image_missing": "❌ Для конвертации PDF→JPG требуется pdf2image.\npip install pdf2image"
     }
 }
 
 def get_text(user_id: int, key: str, *args) -> str:
-    """Foydalanuvchi tilida matn qaytaradi"""
     user = user_sessions.get(user_id)
     lang = DEFAULT_LANG
     if user and "lang" in user:
@@ -143,7 +165,172 @@ def format_size(size: int) -> str:
         size /= 1024.0
     return f"{size:.2f} GB"
 
-# ========== RASM SIQISH ==========
+# ========== LIBREOFFICE (KONVERTATSIYA UCHUN) ==========
+def find_libreoffice() -> Optional[str]:
+    possible = ["soffice", "libreoffice"]
+    for name in possible:
+        path = shutil.which(name)
+        if path:
+            return path
+    # Windows uchun qo'shimcha
+    windows_paths = [
+        "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+        "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe"
+    ]
+    for p in windows_paths:
+        if Path(p).exists():
+            return p
+    return None
+
+def convert_with_libreoffice(src: Path, dst: Path) -> bool:
+    """LibreOffice bilan konvertatsiya (src -> dst, format dst extension orqali aniqlanadi)"""
+    lo = find_libreoffice()
+    if not lo:
+        return False
+    cmd = [
+        lo,
+        "--headless",
+        "--convert-to", dst.suffix[1:],
+        "--outdir", str(dst.parent),
+        str(src)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
+        converted = dst.parent / f"{src.stem}.{dst.suffix[1:]}"
+        if converted.exists():
+            shutil.move(str(converted), str(dst))
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"LibreOffice xatosi: {e}")
+        return False
+
+def convert_pdf_to_images(pdf_path: Path, output_folder: Path, base_name: str) -> List[Path]:
+    """PDF ning har bir sahifasini JPG ga aylantiradi"""
+    if not PDF2IMAGE_AVAILABLE:
+        raise Exception("pdf2image o‘rnatilmagan")
+    images = convert_from_path(pdf_path, dpi=150)
+    out_paths = []
+    for i, img in enumerate(images):
+        out_path = output_folder / f"{base_name}_page{i+1}.jpg"
+        img.save(out_path, "JPEG", quality=85)
+        out_paths.append(out_path)
+    return out_paths
+
+def convert_jpg_to_pdf(image_paths: List[Path], output_pdf: Path, quality: int = 85) -> bool:
+    """Bir nechta rasmni bitta PDF ga birlashtiradi (img2pdf)"""
+    temp_imgs = []
+    for src in image_paths:
+        temp = output_pdf.parent / f"temp_{src.name}"
+        shutil.copy2(src, temp)
+        # Agar siqish kerak bo'lsa (Pillow bilan)
+        if quality < 100:
+            with Image.open(temp) as img:
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    rgb = Image.new('RGB', img.size, (255,255,255))
+                    if img.mode == 'RGBA':
+                        rgb.paste(img, mask=img.split()[-1])
+                    else:
+                        rgb.paste(img)
+                    img = rgb
+                img.save(temp, optimize=True, quality=quality)
+        temp_imgs.append(temp)
+    try:
+        with open(output_pdf, "wb") as f:
+            f.write(img2pdf.convert([str(p) for p in temp_imgs]))
+        return True
+    except Exception as e:
+        logger.error(f"JPG->PDF xatosi: {e}")
+        return False
+    finally:
+        for t in temp_imgs:
+            t.unlink()
+
+# ========== KONVERTATSIYA FUNKSIYASI ==========
+async def convert_files(user_id: int, from_fmt: str, to_fmt: str) -> Tuple[bool, str, int]:
+    """Barcha saqlangan fayllarni from_fmt -> to_fmt ga o‘giradi.
+       Yangi fayllarni sessionga qo‘shadi. Qaytaradi: (success, message, qo‘shilgan_fayl_soni)"""
+    session_data = user_sessions.get(user_id, {"files": []})
+    files = session_data.get("files", [])
+    # Kerakli fayllarni topish
+    matching = [f for f in files if Path(f["name"]).suffix.lower() == f".{from_fmt}"]
+    if not matching:
+        return False, get_text(user_id, "no_files"), 0
+
+    ensure_dirs()
+    new_files = []
+    errors = []
+    from_fmt = from_fmt.lower()
+    to_fmt = to_fmt.lower()
+    converted_count = 0
+
+    # 1) DOCX/PPTX -> PDF (LibreOffice)
+    if from_fmt in ("docx", "pptx") and to_fmt == "pdf":
+        for f in matching:
+            src = Path(f["path"])
+            dst = OUTPUT_DIR / f"converted_{datetime.now().timestamp()}_{src.stem}.pdf"
+            if convert_with_libreoffice(src, dst):
+                new_files.append({
+                    "path": str(dst),
+                    "name": dst.name,
+                    "type": "pdf",
+                    "size": dst.stat().st_size,
+                    "timestamp": datetime.now().timestamp()
+                })
+                converted_count += 1
+            else:
+                errors.append(f["name"])
+    # 2) PDF -> JPG (pdf2image)
+    elif from_fmt == "pdf" and to_fmt == "jpg":
+        if not PDF2IMAGE_AVAILABLE:
+            return False, get_text(user_id, "pdf2image_missing"), 0
+        for f in matching:
+            src = Path(f["path"])
+            try:
+                jpgs = convert_pdf_to_images(src, OUTPUT_DIR, src.stem)
+                for jpg in jpgs:
+                    new_files.append({
+                        "path": str(jpg),
+                        "name": jpg.name,
+                        "type": "image",
+                        "size": jpg.stat().st_size,
+                        "timestamp": datetime.now().timestamp()
+                    })
+                    converted_count += 1
+            except Exception as e:
+                errors.append(f"{f['name']} ({str(e)})")
+    # 3) JPG -> PDF (img2pdf)
+    elif from_fmt == "jpg" and to_fmt == "pdf":
+        # Barcha jpg fayllarni bitta PDF ga birlashtiramiz? Yo‘q, har bir rasmni alohida PDF qilish yaxshiroq?
+        # Foydalanuvchi bir nechta rasmni bitta PDF istashi mumkin, ammo bu alohida funksiya. Soddaligi uchun har bir rasmni alohida PDF qilamiz.
+        for f in matching:
+            src = Path(f["path"])
+            dst = OUTPUT_DIR / f"converted_{datetime.now().timestamp()}_{src.stem}.pdf"
+            if convert_jpg_to_pdf([src], dst, session_data.get("quality", DEFAULT_QUALITY)):
+                new_files.append({
+                    "path": str(dst),
+                    "name": dst.name,
+                    "type": "pdf",
+                    "size": dst.stat().st_size,
+                    "timestamp": datetime.now().timestamp()
+                })
+                converted_count += 1
+            else:
+                errors.append(f["name"])
+    else:
+        return False, get_text(user_id, "convert_usage"), 0
+
+    # Yangi fayllarni seansga qo‘shish
+    if new_files:
+        user_sessions[user_id]["files"].extend(new_files)
+        message = get_text(user_id, "convert_success", from_fmt.upper(), to_fmt.upper(), converted_count)
+        if errors:
+            message += f"\n⚠️ Xatoliklar: {', '.join(errors)}"
+        return True, message, converted_count
+    else:
+        return False, get_text(user_id, "error", "Hech qanday fayl konvertatsiya qilinmadi"), 0
+
+# ========== RASM SIQISH, DOKUMENT SIQISH (AVVALGI) ==========
 def compress_image_file(img_path: Path, quality: int) -> bool:
     try:
         with Image.open(img_path) as img:
@@ -182,7 +369,31 @@ def compress_docx_pptx(zip_path: Path, quality: int) -> int:
         shutil.rmtree(temp_extract, ignore_errors=True)
     return count
 
-# ========== RASMLARNI BIRTA PDF ==========
+def compress_docx_pptx_file(src: Path, dst: Path, file_type: str, mode: str, quality: int) -> Tuple[bool, str, int]:
+    try:
+        shutil.copy2(src, dst)
+        if mode == "compress":
+            img_count = compress_docx_pptx(dst, quality)
+            orig = src.stat().st_size
+            new = dst.stat().st_size
+            reduction = (1 - new/orig) * 100 if orig else 0
+            msg = f"✅ {file_type.upper()} siqildi! {format_size(new)} ({reduction:.1f}% kichraydi) – {img_count} rasm optimallashtirildi."
+            return True, msg, new
+        else:
+            size = dst.stat().st_size
+            msg = f"📄 {file_type.upper()}: {src.name} → {format_size(size)} (o‘zgarishsiz)"
+            return True, msg, size
+    except Exception as e:
+        return False, f"❌ Xatolik: {str(e)}", 0
+
+def copy_pdf(src: Path, dst: Path, name: str) -> Tuple[bool, str, int]:
+    try:
+        shutil.copy2(src, dst)
+        size = dst.stat().st_size
+        return True, f"📄 PDF: {name} → {format_size(size)}", size
+    except Exception as e:
+        return False, f"❌ {name}: {str(e)}", 0
+
 def images_to_pdf(image_paths: List[Path], output_pdf: Path, quality: int) -> bool:
     temp_imgs = []
     for idx, img_path in enumerate(image_paths):
@@ -201,32 +412,6 @@ def images_to_pdf(image_paths: List[Path], output_pdf: Path, quality: int) -> bo
     finally:
         for tmp in temp_imgs:
             tmp.unlink()
-
-# ========== FAYLLARNI QAYTA ISHLASH ==========
-def copy_pdf(src: Path, dst: Path, name: str) -> Tuple[bool, str, int]:
-    try:
-        shutil.copy2(src, dst)
-        size = dst.stat().st_size
-        return True, f"📄 PDF: {name} → {format_size(size)}", size
-    except Exception as e:
-        return False, f"❌ {name}: {str(e)}", 0
-
-def process_docx_pptx(src: Path, dst: Path, file_type: str, mode: str, quality: int) -> Tuple[bool, str, int]:
-    try:
-        shutil.copy2(src, dst)
-        if mode == "compress":
-            img_count = compress_docx_pptx(dst, quality)
-            orig = src.stat().st_size
-            new = dst.stat().st_size
-            reduction = (1 - new/orig) * 100 if orig else 0
-            msg = f"✅ {file_type.upper()} siqildi! {format_size(new)} ({reduction:.1f}% kichraydi) – {img_count} rasm optimallashtirildi."
-            return True, msg, new
-        else:
-            size = dst.stat().st_size
-            msg = f"📄 {file_type.upper()}: {src.name} → {format_size(size)} (o‘zgarishsiz)"
-            return True, msg, size
-    except Exception as e:
-        return False, f"❌ Xatolik: {str(e)}", 0
 
 def create_zip(files_data: List[Dict], zip_name: str) -> Path:
     zip_path = OUTPUT_DIR / zip_name
@@ -264,7 +449,7 @@ def cleanup_user(user_id: int):
                 pass
         del user_sessions[user_id]
 
-# ========== ASOSIY ISHLOV ==========
+# ========== ASOSIY ISHLOV ZAVODI (ZIP / PDF) ==========
 async def process_files(user_id: int, message: Message):
     session = user_sessions.get(user_id, {"files": []})
     files = session.get("files", [])
@@ -366,7 +551,7 @@ async def process_files(user_id: int, message: Message):
 
     for d in docx_list:
         dst = OUTPUT_DIR / f"docx_{datetime.now().timestamp()}_{d['name']}"
-        ok, msg, sz = process_docx_pptx(d["src"], dst, "docx", mode, quality)
+        ok, msg, sz = compress_docx_pptx_file(d["src"], dst, "docx", mode, quality)
         if ok:
             processed_items.append({"path": dst, "arcname": f"DOCX/{d['name']}"})
             total_processed += sz
@@ -378,7 +563,7 @@ async def process_files(user_id: int, message: Message):
 
     for p in pptx_list:
         dst = OUTPUT_DIR / f"pptx_{datetime.now().timestamp()}_{p['name']}"
-        ok, msg, sz = process_docx_pptx(p["src"], dst, "pptx", mode, quality)
+        ok, msg, sz = compress_docx_pptx_file(p["src"], dst, "pptx", mode, quality)
         if ok:
             processed_items.append({"path": dst, "arcname": f"PPTX/{p['name']}"})
             total_processed += sz
@@ -455,48 +640,7 @@ async def save_file(user_id: int, file_id: str, file_name: str, file_size: int, 
             file_path.unlink()
         return False
 
-@dp.message(lambda m: m.document)
-async def handle_document(msg: Message):
-    doc = msg.document
-    if doc.file_size > MAX_FILE_SIZE:
-        await msg.answer(f"❌ Fayl juda katta ({format_size(doc.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
-        return
-    ext = Path(doc.file_name).suffix.lower()
-    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
-        file_type = "image"
-        name = doc.file_name
-    elif ext == '.pdf':
-        file_type = "pdf"
-        name = doc.file_name
-    elif ext == '.docx':
-        file_type = "docx"
-        name = doc.file_name
-    elif ext == '.pptx':
-        file_type = "pptx"
-        name = doc.file_name
-    else:
-        await msg.answer(f"❌ {ext} qo‘llab-quvvatlanmaydi. Faqat PDF, DOCX, PPTX va rasm fayllari.")
-        return
-    success = await save_file(msg.from_user.id, doc.file_id, name, doc.file_size, file_type)
-    if success:
-        total = len(user_sessions[msg.from_user.id]["files"])
-        await msg.answer(get_text(msg.from_user.id, "file_saved", name, total))
-        await auto_process(msg.from_user.id, msg)
-
-@dp.message(lambda m: m.photo)
-async def handle_photo(msg: Message):
-    photo = msg.photo[-1]
-    if photo.file_size > MAX_FILE_SIZE:
-        await msg.answer(f"❌ Rasm juda katta ({format_size(photo.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
-        return
-    name = f"photo_{photo.file_unique_id}.jpg"
-    success = await save_file(msg.from_user.id, photo.file_id, name, photo.file_size, "image")
-    if success:
-        total = len(user_sessions[msg.from_user.id]["files"])
-        await msg.answer(get_text(msg.from_user.id, "file_saved", name, total))
-        await auto_process(msg.from_user.id, msg)
-
-# ========== BUYRUQLAR ==========
+# ========== HAMMA BUYRUQLAR ==========
 @dp.message(Command("start"))
 async def start_cmd(msg: Message):
     uid = msg.from_user.id
@@ -686,6 +830,47 @@ async def sort_cmd(msg: Message):
     user_sessions[uid]["sort_by"] = args[1]
     await msg.answer(get_text(uid, "sorted", args[1]))
 
+@dp.message(Command("convert"))
+async def convert_cmd(msg: Message):
+    args = msg.text.split()
+    if len(args) != 3:
+        await msg.answer(get_text(msg.from_user.id, "convert_usage"))
+        return
+    from_fmt = args[1].lower()
+    to_fmt = args[2].lower()
+    allowed = {
+        ("docx","pdf"), ("pptx","pdf"),
+        ("pdf","jpg"), ("jpg","pdf")
+    }
+    if (from_fmt, to_fmt) not in allowed:
+        await msg.answer(get_text(msg.from_user.id, "convert_usage"))
+        return
+
+    uid = msg.from_user.id
+    if uid not in user_sessions:
+        user_sessions[uid] = {
+            "files": [],
+            "mode": "fast",
+            "auto": False,
+            "format": "zip",
+            "quality": DEFAULT_QUALITY,
+            "password": None,
+            "lang": DEFAULT_LANG,
+            "sort_by": "date"
+        }
+    # LibreOffice mavjudligini tekshirish (pdf/jpg dan tashqari)
+    if from_fmt in ("docx","pptx") and to_fmt == "pdf":
+        if not find_libreoffice():
+            await msg.answer(get_text(uid, "libreoffice_missing"))
+            return
+    elif from_fmt == "pdf" and to_fmt == "jpg" and not PDF2IMAGE_AVAILABLE:
+        await msg.answer(get_text(uid, "pdf2image_missing"))
+        return
+
+    await msg.answer(get_text(uid, "convert_start", len(user_sessions[uid]["files"]), from_fmt.upper(), to_fmt.upper()))
+    success, res_msg, count = await convert_files(uid, from_fmt, to_fmt)
+    await msg.answer(res_msg)
+
 @dp.message(Command("pack"))
 async def pack_cmd(msg: Message):
     await process_files(msg.from_user.id, msg)
@@ -719,12 +904,53 @@ async def stats_cmd(msg: Message):
     uid = msg.from_user.id
     await msg.answer(get_text(uid, "stats", temp_cnt, format_size(temp_sz), out_cnt, format_size(out_sz)))
 
+@dp.message(lambda m: m.document)
+async def handle_document(msg: Message):
+    doc = msg.document
+    if doc.file_size > MAX_FILE_SIZE:
+        await msg.answer(f"❌ Fayl juda katta ({format_size(doc.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
+        return
+    ext = Path(doc.file_name).suffix.lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+        file_type = "image"
+        name = doc.file_name
+    elif ext == '.pdf':
+        file_type = "pdf"
+        name = doc.file_name
+    elif ext == '.docx':
+        file_type = "docx"
+        name = doc.file_name
+    elif ext == '.pptx':
+        file_type = "pptx"
+        name = doc.file_name
+    else:
+        await msg.answer(f"❌ {ext} qo‘llab-quvvatlanmaydi. Faqat PDF, DOCX, PPTX va rasm fayllari.")
+        return
+    success = await save_file(msg.from_user.id, doc.file_id, name, doc.file_size, file_type)
+    if success:
+        total = len(user_sessions[msg.from_user.id]["files"])
+        await msg.answer(get_text(msg.from_user.id, "file_saved", name, total))
+        await auto_process(msg.from_user.id, msg)
+
+@dp.message(lambda m: m.photo)
+async def handle_photo(msg: Message):
+    photo = msg.photo[-1]
+    if photo.file_size > MAX_FILE_SIZE:
+        await msg.answer(f"❌ Rasm juda katta ({format_size(photo.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
+        return
+    name = f"photo_{photo.file_unique_id}.jpg"
+    success = await save_file(msg.from_user.id, photo.file_id, name, photo.file_size, "image")
+    if success:
+        total = len(user_sessions[msg.from_user.id]["files"])
+        await msg.answer(get_text(msg.from_user.id, "file_saved", name, total))
+        await auto_process(msg.from_user.id, msg)
+
 @dp.message()
 async def unknown(msg: Message):
     await msg.answer("❓ Tushunarsiz. /start bilan boshlang yoki fayl/rasm yuboring.")
 
 async def main():
-    print("🚀 Bot ishga tushdi (barcha funksiyalar qo‘shilgan, til o‘zgartirish tuzatilgan).")
+    print("🚀 Bot ishga tushdi (konverter qo‘shilgan).")
     ensure_dirs()
     await dp.start_polling(bot)
 
