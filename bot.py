@@ -310,7 +310,7 @@ async def start_cmd(message: Message):
 • <b>/clear</b> – saqlangan fayllarni tozalash
 • <b>/stats</b> – statistika
 
-⚠️ Hech qanday siqish (Ghostscript) kerak emas. PDF faqat birlashtiriladi.
+
 """
     await message.answer(text)
 
