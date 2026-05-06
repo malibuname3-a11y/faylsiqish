@@ -14,6 +14,8 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from PIL import Image
+from docx import Document
+from docx.shared import Inches, Mm
 
 # ========== TOKEN ==========
 def get_token():
@@ -26,7 +28,7 @@ if not BOT_TOKEN:
     raise ValueError("Token topilmadi")
 
 # ========== SOZLAMALAR ==========
-BASE_DIR = Path(tempfile.gettempdir()) / "file_zip_bot"
+BASE_DIR = Path(tempfile.gettempdir()) / "image_to_docx_bot"
 TEMP_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB
@@ -54,9 +56,24 @@ def format_size(size: int) -> str:
         size /= 1024.0
     return f"{size:.2f} GB"
 
-# ========== RASM / DOCX / PPTX SIQISH FUNKSIYALARI ==========
+# ========== RASMNI DOCX GA AYLANTIRISH ==========
+async def convert_image_to_docx(image_path: Path, output_docx_path: Path, image_name: str) -> bool:
+    """Rasm faylini yangi DOCX hujjatga joylaydi"""
+    try:
+        doc = Document()
+        # Hujjat sarlavhasi sifatida rasm nomi
+        doc.add_heading(f"Rasm: {image_name}", level=1)
+        # Rasmni sahifaga sig'adigan qilib qo'shish
+        doc.add_picture(str(image_path), width=Inches(6))  # eni 6 dyuym
+        doc.save(str(output_docx_path))
+        return True
+    except Exception as e:
+        logger.error(f"Rasmni DOCX ga o‘tkazish xatosi: {e}")
+        return False
+
+# ========== SIQISH FUNKSIYALARI (DOCX/PPTX UCHUN) ==========
 def compress_image_file(img_path: Path, quality: int = 85) -> bool:
-    """Alohida rasm faylini siqish (o‘rniga yozadi)"""
+    """Alohida rasm faylini siqish (DOCX ichidagi rasmlar uchun)"""
     try:
         with Image.open(img_path) as img:
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -107,32 +124,11 @@ def compress_docx_pptx_file(src: Path, dst: Path, file_type: str) -> Tuple[bool,
     except Exception as e:
         return False, f"❌ Xatolik: {str(e)}", 0
 
-def process_image_file(src: Path, dst: Path, name: str, mode: str) -> Tuple[bool, str, int]:
-    """Rasmni siqish (compress) yoki nusxalash (fast)"""
-    try:
-        if mode == "compress":
-            shutil.copy2(src, dst)
-            if compress_image_file(dst, quality=85):
-                size = dst.stat().st_size
-                return True, f"🖼️ {name} siqildi → {format_size(size)}", size
-            else:
-                # agar siqilmagan bo‘lsa, asl nusxani ishlat
-                dst.unlink()
-                shutil.copy2(src, dst)
-                size = dst.stat().st_size
-                return True, f"🖼️ {name} (siqilmadi) → {format_size(size)}", size
-        else:  # fast
-            shutil.copy2(src, dst)
-            size = dst.stat().st_size
-            return True, f"🖼️ {name} → {format_size(size)}", size
-    except Exception as e:
-        return False, f"❌ {name}: {str(e)}", 0
-
 def process_file_fast(src: Path, dst: Path, name: str, category: str) -> Tuple[bool, str, int]:
     try:
         shutil.copy2(src, dst)
         size = dst.stat().st_size
-        return True, f"📄 {category}: {name} → {format_size(size)}", size
+        return True, f"📄 {category}: {name} → {format_size(size)} (o‘zgarishsiz)", size
     except Exception as e:
         return False, f"❌ {name}: {str(e)}", 0
 
@@ -173,12 +169,10 @@ async def pack_files(user_id: int, message: Message):
     for f in files:
         src = Path(f["path"])
         name = f["name"]
-        category = f["type"].upper()   # PDF, DOCX, PPTX, IMAGE
+        category = f["type"].upper()   # PDF, DOCX, PPTX (rasmdan yasalgan DOCX ham shu yerda)
         out = OUTPUT_DIR / f"{mode}_{datetime.now().timestamp()}_{name}"
 
-        if category == "IMAGE":
-            ok, msg, size = process_image_file(src, out, name, mode)
-        elif category in ("DOCX", "PPTX") and mode == "compress":
+        if category in ("DOCX", "PPTX") and mode == "compress":
             ok, msg, size = compress_docx_pptx_file(src, out, category)
         else:
             # PDF yoki fast mode yoki compress rejimida bo‘lmagan DOCX/PPTX
@@ -226,43 +220,121 @@ async def auto_pack(user_id: int, message: Message):
     if len(user_sessions[user_id].get("files", [])) >= AUTO_THRESHOLD:
         await pack_files(user_id, message)
 
-# ========== FAYL/ RASM YUKLASH ==========
-async def save_file(user_id: int, file_id: str, file_name: str, file_size: int, file_type: str):
+# ========== FAYL / RASMNI QABUL QILISH ==========
+async def save_file(user_id: int, file_id: str, file_name: str, file_size: int, file_type: str, file_path: Path = None):
     if user_id not in user_sessions:
         user_sessions[user_id] = {"files": [], "mode": "fast", "auto": False}
     ensure_dirs()
-    safe_name = f"{datetime.now().timestamp()}_{user_id}_{file_name}"
-    file_path = TEMP_DIR / safe_name
+    if file_path is None:
+        safe_name = f"{datetime.now().timestamp()}_{user_id}_{file_name}"
+        file_path = TEMP_DIR / safe_name
+        try:
+            file = await bot.get_file(file_id)
+            await bot.download_file(file.file_path, file_path)
+        except Exception as e:
+            logger.exception("Yuklash xatosi")
+            return False
+    user_sessions[user_id]["files"].append({
+        "path": str(file_path),
+        "name": file_name,
+        "type": file_type,
+        "size": file_size,
+        "timestamp": datetime.now()
+    })
+    return True
+
+@dp.message(lambda m: m.document)
+async def handle_document(msg: Message):
+    doc = msg.document
+    if doc.file_size > MAX_FILE_SIZE:
+        await msg.answer(f"❌ Fayl juda katta ({format_size(doc.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
+        return
+    ext = Path(doc.file_name).suffix.lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+        # Rasm fayli (document sifatida) -> DOCX ga aylantiriladi
+        await msg.answer("⏳ Rasm DOCX ga aylantirilmoqda...")
+        temp_img = TEMP_DIR / f"temp_img_{datetime.now().timestamp()}.jpg"
+        try:
+            file = await bot.get_file(doc.file_id)
+            await bot.download_file(file.file_path, temp_img)
+            # DOCX yaratish
+            docx_name = f"{Path(doc.file_name).stem}.docx"
+            docx_path = TEMP_DIR / f"converted_{datetime.now().timestamp()}_{docx_name}"
+            success = await convert_image_to_docx(temp_img, docx_path, doc.file_name)
+            if success:
+                # Yuklangan rasmni o‘chirib, yangi DOCX ni saqlash
+                temp_img.unlink()
+                # DOCX hajmi
+                docx_size = docx_path.stat().st_size
+                await save_file(msg.from_user.id, None, docx_name, docx_size, "docx", file_path=docx_path)
+                total = len(user_sessions[msg.from_user.id]["files"])
+                await msg.answer(f"✅ Rasm DOCX ga o‘tkazildi: {docx_name} ({format_size(docx_size)})\nJami: {total} ta fayl.")
+                await auto_pack(msg.from_user.id, msg)
+            else:
+                temp_img.unlink()
+                await msg.answer("❌ Rasmni DOCX ga o‘tkazishda xatolik.")
+        except Exception as e:
+            await msg.answer(f"❌ Xatolik: {str(e)[:100]}")
+            if temp_img.exists():
+                temp_img.unlink()
+        return
+    elif ext in ('.pdf', '.docx', '.pptx'):
+        file_type = ext[1:]  # pdf, docx, pptx
+        name = doc.file_name
+        success = await save_file(msg.from_user.id, doc.file_id, name, doc.file_size, file_type)
+        if success:
+            total = len(user_sessions[msg.from_user.id]["files"])
+            await msg.answer(f"✅ {name} saqlandi. Jami: {total} ta fayl.")
+            await auto_pack(msg.from_user.id, msg)
+        else:
+            await msg.answer("❌ Yuklashda xatolik.")
+    else:
+        await msg.answer(f"❌ {ext} qo‘llab-quvvatlanmaydi. Faqat PDF, DOCX, PPTX va rasm fayllari.")
+
+@dp.message(lambda m: m.photo)
+async def handle_photo(msg: Message):
+    """Telegram rasmi (photo) -> DOCX ga aylantiriladi"""
+    photo = msg.photo[-1]  # eng katta rasm
+    if photo.file_size > MAX_FILE_SIZE:
+        await msg.answer(f"❌ Rasm juda katta ({format_size(photo.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
+        return
+    await msg.answer("⏳ Rasm DOCX ga aylantirilmoqda...")
+    temp_img = TEMP_DIR / f"temp_photo_{datetime.now().timestamp()}.jpg"
     try:
-        file = await bot.get_file(file_id)
-        await bot.download_file(file.file_path, file_path)
-        user_sessions[user_id]["files"].append({
-            "path": str(file_path),
-            "name": file_name,
-            "type": file_type,
-            "size": file_size,
-            "timestamp": datetime.now()
-        })
-        return True
+        file = await bot.get_file(photo.file_id)
+        await bot.download_file(file.file_path, temp_img)
+        docx_name = f"photo_{photo.file_unique_id}.docx"
+        docx_path = TEMP_DIR / f"converted_{datetime.now().timestamp()}_{docx_name}"
+        success = await convert_image_to_docx(temp_img, docx_path, docx_name)
+        if success:
+            temp_img.unlink()
+            docx_size = docx_path.stat().st_size
+            await save_file(msg.from_user.id, None, docx_name, docx_size, "docx", file_path=docx_path)
+            total = len(user_sessions[msg.from_user.id]["files"])
+            await msg.answer(f"✅ Rasm DOCX ga o‘tkazildi: {docx_name} ({format_size(docx_size)})\nJami: {total} ta fayl.")
+            await auto_pack(msg.from_user.id, msg)
+        else:
+            temp_img.unlink()
+            await msg.answer("❌ Rasmni DOCX ga o‘tkazishda xatolik.")
     except Exception as e:
-        logger.exception("Yuklash xatosi")
-        if file_path.exists():
-            file_path.unlink()
-        return False
+        await msg.answer(f"❌ Xatolik: {str(e)[:100]}")
+        if temp_img.exists():
+            temp_img.unlink()
 
 # ========== BUYRUQLAR ==========
 @dp.message(Command("start"))
 async def start_cmd(msg: Message):
     await msg.answer(
-        "📦 **Universal ZIP Bot**\n\n"
-        "🖼️ Rasm (photo yoki document), PDF, DOCX, PPTX yuboring – ular saqlanadi.\n"
+        "📦 **Rasm → DOCX + ZIP Bot**\n\n"
+        "🖼️ Yuborilgan har qanday rasm avtomatik ravishda **DOCX** faylga aylantiriladi (Word hujjat ichida rasm).\n"
+        "📄 PDF, DOCX, PPTX fayllar ham qabul qilinadi.\n\n"
         "🔹 `/pack` – barcha saqlangan fayllarni bitta ZIP arxivga solib yuboradi.\n"
-        "🔹 `/mode compress` – DOCX/PPTX va rasmlarni siqadi (hajm kamayadi, biroz sekin).\n"
+        "🔹 `/mode compress` – DOCX/PPTX ichidagi rasmlarni siqadi (hajm kamayadi).\n"
         "🔹 `/mode fast` – hech qanday siqish yo‘q, tez zip.\n"
-        "🔹 `/auto` – 3 ta fayldan keyin avtomatik ZIP yuborish (yoqish/o‘chirish).\n"
-        "🔹 `/list`, `/clear` – fayllar ro‘yxati va tozalash.\n\n"
-        "Hozirgi rejim: **fast**\n"
-        "Rasmlar soni cheklanmagan, xohlagan vaqtda `/pack` bilan bitta fayl qilib oling."
+        "🔹 `/auto` – 3 ta fayldan keyin avtomatik ZIP yuborish.\n"
+        "🔹 `/list` – saqlangan fayllar ro‘yxati.\n"
+        "🔹 `/clear` – tozalash.\n\n"
+        "Hozirgi rejim: **fast**"
     )
 
 @dp.message(Command("mode"))
@@ -308,53 +380,13 @@ async def clear_cmd(msg: Message):
     cleanup_user(msg.from_user.id)
     await msg.answer("🧹 Barcha fayllar tozalandi.")
 
-# ========== HAMMA TURDAGI FAYLLARNI QABUL QILISH ==========
-@dp.message(lambda m: m.document)
-async def handle_document(msg: Message):
-    doc = msg.document
-    if doc.file_size > MAX_FILE_SIZE:
-        await msg.answer(f"❌ Fayl juda katta ({format_size(doc.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
-        return
-    ext = Path(doc.file_name).suffix.lower()
-    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
-        file_type = "IMAGE"
-        name = doc.file_name
-    elif ext in ('.pdf', '.docx', '.pptx'):
-        file_type = ext[1:]   # pdf, docx, pptx
-        name = doc.file_name
-    else:
-        await msg.answer(f"❌ {ext} qo‘llab-quvvatlanmaydi. Faqat PDF, DOCX, PPTX va rasm fayllari.")
-        return
-    success = await save_file(msg.from_user.id, doc.file_id, name, doc.file_size, file_type)
-    if success:
-        total = len(user_sessions[msg.from_user.id]["files"])
-        await msg.answer(f"✅ {name} saqlandi. Jami: {total} ta fayl.")
-        await auto_pack(msg.from_user.id, msg)
-    else:
-        await msg.answer("❌ Yuklashda xatolik.")
-
-@dp.message(lambda m: m.photo)
-async def handle_photo(msg: Message):
-    photo = msg.photo[-1]   # eng katta rasm
-    if photo.file_size > MAX_FILE_SIZE:
-        await msg.answer(f"❌ Rasm juda katta ({format_size(photo.file_size)}). Maksimal {format_size(MAX_FILE_SIZE)}")
-        return
-    name = f"photo_{photo.file_unique_id}.jpg"
-    success = await save_file(msg.from_user.id, photo.file_id, name, photo.file_size, "IMAGE")
-    if success:
-        total = len(user_sessions[msg.from_user.id]["files"])
-        await msg.answer(f"✅ Rasm saqlandi. Jami: {total} ta fayl.")
-        await auto_pack(msg.from_user.id, msg)
-    else:
-        await msg.answer("❌ Rasm yuklashda xatolik.")
-
 @dp.message()
 async def unknown(msg: Message):
     await msg.answer("❓ Tushunarsiz. Fayl (PDF, DOCX, PPTX) yoki rasm yuboring.")
 
 # ========== ISHGA TUSHIRISH ==========
 async def main():
-    print("🚀 Bot ishga tushdi (rasmlar, PDF, DOCX, PPTX qabul qilinadi).")
+    print("🚀 Bot ishga tushdi (rasm → DOCX, keyin ZIP).")
     ensure_dirs()
     await dp.start_polling(bot)
 
