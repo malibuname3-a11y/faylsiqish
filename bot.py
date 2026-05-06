@@ -5,6 +5,8 @@ import asyncio
 import logging
 import subprocess
 import tempfile
+import signal
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List, Dict, Optional
@@ -14,6 +16,7 @@ from aiogram.types import Message, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from PIL import Image
 
 # ========== AVTOMATIK KONFIGURATSIYA ==========
@@ -57,22 +60,22 @@ def find_ghostscript() -> Optional[str]:
 BOT_TOKEN = get_token()
 GHOSTSCRIPT = find_ghostscript()
 BASE_TEMP_DIR = Path(tempfile.gettempdir()) / "file_compressor_bot"
-TEMP_DIR = BASE_TEMP_DIR / "uploads"      # Foydalanuvchi yuklagan fayllar
-OUTPUT_DIR = BASE_TEMP_DIR / "compressed" # Siqilgan fayllar
+TEMP_DIR = BASE_TEMP_DIR / "uploads"
+OUTPUT_DIR = BASE_TEMP_DIR / "compressed"
 MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", 50 * 1024 * 1024))
 DEFAULT_PDF_QUALITY = os.environ.get("PDF_QUALITY", "screen")
 CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 24))
 API_TIMEOUT = int(os.environ.get("API_TIMEOUT", 120))
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Bot sozlamalari (timeout oshirilgan)
+# Session va bot
 session = AiohttpSession(timeout=API_TIMEOUT)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"), session=session)
 dp = Dispatcher()
 
-# Foydalanuvchi seansi: user_id -> { "files": [{"path": Path, "name": str, "type": str}], "quality": str }
+# Foydalanuvchi ma'lumotlari
 user_sessions: Dict[int, Dict] = {}
 user_pdf_quality: Dict[int, str] = {}
 
@@ -122,7 +125,6 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
     return count
 
 def compress_docx_pptx(input_path: Path, output_path: Path, ftype: str) -> Tuple[bool, str, int]:
-    """Qaytaradi: (success, message, compressed_size)"""
     try:
         shutil.copy2(input_path, output_path)
         img_count = compress_images_in_zip(output_path)
@@ -161,10 +163,6 @@ def compress_pdf(input_path: Path, output_path: Path, quality: str = "screen") -
         return False, f"❌ Xatolik: {str(e)}", 0
 
 def create_categorized_zip(files_data: List[Dict], zip_name: str) -> Path:
-    """
-    files_data: [{"original_path": Path, "compressed_path": Path, "category": str, "original_name": str}]
-    ZIP ichida kategoriya papkalari: PDF/, DOCX/, PPTX/
-    """
     zip_path = OUTPUT_DIR / zip_name
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for fdata in files_data:
@@ -281,7 +279,7 @@ async def pack_cmd(message: Message):
     ensure_dirs()
     quality = user_pdf_quality.get(user_id, DEFAULT_PDF_QUALITY)
 
-    compressed_data = []  # [{"original_path":..., "compressed_path":..., "category":..., "original_name":...}]
+    compressed_data = []
     results = []
     total_original = 0
     total_compressed = 0
@@ -292,7 +290,6 @@ async def pack_cmd(message: Message):
         original_name = fdata["name"]
         total_original += fdata["size"]
 
-        # Siqilgan fayl nomi
         compressed_name = f"compressed_{original_name}"
         compressed_path = OUTPUT_DIR / compressed_name
 
@@ -319,12 +316,10 @@ async def pack_cmd(message: Message):
         await status.edit_text("❌ Hech qanday fayl siqilmadi.")
         return
 
-    # ZIP yaratish (kategoriyalarga ajratilgan)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_name = f"compressed_{timestamp}_{user_id}.zip"
     zip_path = create_categorized_zip(compressed_data, zip_name)
 
-    # Hisobot
     summary = f"📊 <b>Hisobot:</b>\n" + "\n".join(results[:10])
     if len(results) > 10:
         summary += f"\n... va {len(results)-10} ta fayl"
@@ -332,7 +327,6 @@ async def pack_cmd(message: Message):
     summary += f"\n💾 Siqilgan hajm: {format_size(total_compressed)}"
     summary += f"\n📉 Tejalgan: {format_size(total_original - total_compressed)} ({(1-total_compressed/total_original)*100:.1f}%)"
 
-    # ZIP faylni yuborish
     with open(zip_path, 'rb') as f:
         await message.answer_document(
             BufferedInputFile(f.read(), filename=zip_name),
@@ -340,7 +334,6 @@ async def pack_cmd(message: Message):
         )
     await status.delete()
 
-    # Tozalash
     cleanup_user_session(user_id)
     if zip_path.exists():
         zip_path.unlink()
@@ -365,7 +358,7 @@ async def stats_cmd(message: Message):
 💾 Vaqtinchalik hajm: {format_size(temp_sz)}
 💿 Siqilgan hajm: {format_size(out_sz)}
 🖨️ Ghostscript: {"✅ mavjud" if GHOSTSCRIPT else "❌ topilmadi"}
-""" )
+""")
 
 @dp.message(lambda m: m.document)
 async def handle_document(message: Message):
@@ -384,13 +377,11 @@ async def handle_document(message: Message):
 
     file_type = ext[1:]  # pdf, docx, pptx
 
-    # Saqlash papkalari
     ensure_dirs()
     user_id = message.from_user.id
     if user_id not in user_sessions:
         user_sessions[user_id] = {"files": []}
 
-    # Yuklab olish
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe_name = f"{timestamp}_{user_id}_{file_name}"
     file_path = TEMP_DIR / safe_name
@@ -419,8 +410,18 @@ async def handle_document(message: Message):
 async def unknown(message: Message):
     await message.answer("❓ Tushunarsiz. /help yordam beradi yoki PDF/DOCX/PPTX fayl yuboring.")
 
-# ========== ISHGA TUSHIRISH ==========
+# ========== ASOSIY FUNKSIYA (TO‘G‘RI yopilish bilan) ==========
+async def on_shutdown():
+    logger.info("Bot yopilmoqda...")
+    await session.close()
+    logger.info("Session yopildi.")
+
 async def main():
+    # Signal handler (Ctrl+C)
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+
     print("="*50)
     print("🤖 Ko'p faylli Compressor Bot ishga tushmoqda...")
     print(f"✅ Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:] if len(BOT_TOKEN)>15 else ''}")
@@ -433,7 +434,23 @@ async def main():
     print(f"📁 Yuklangan fayllar: {TEMP_DIR.absolute()}")
     print(f"📁 Siqilgan fayllar: {OUTPUT_DIR.absolute()}")
     print("="*50)
-    await dp.start_polling(bot)
+
+    try:
+        # Pollingni boshlash
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        await on_shutdown()
+
+async def shutdown():
+    logger.info("Shutdown signal qabul qilindi.")
+    await bot.session.close()
+    await dp.stop_polling()
+    sys.exit(0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot foydalanuvchi tomonidan to'xtatildi.")
+    except Exception as e:
+        logger.exception(f"Kutilmagan xatolik: {e}")
