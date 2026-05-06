@@ -15,9 +15,8 @@ from aiogram.types import Message, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import TelegramNetworkError
 from PIL import Image
-from pypdf import PdfWriter, PdfReader
 
 # ========== TOKENNI AVTOMATIK TOPISH ==========
 def get_token() -> str:
@@ -34,38 +33,27 @@ def get_token() -> str:
     if token_file.exists():
         with open(token_file, "r") as f:
             return f.read().strip()
-    raise ValueError("❌ Token topilmadi! token.txt yoki .env fayl yarating yoki BOT_TOKEN muhit o‘zgaruvchisini o‘rnating.")
+    raise ValueError("❌ Token topilmadi! Iltimos, token.txt yoki .env fayl yarating.")
 
-# ========== SOZLAMALAR (timeout oshirilgan) ==========
+# ========== SOZLAMALAR ==========
 BOT_TOKEN = get_token()
-BASE_TEMP_DIR = Path(tempfile.gettempdir()) / "file_compressor_bot"
+BASE_TEMP_DIR = Path(tempfile.gettempdir()) / "docx_pptx_zip_bot"
 TEMP_DIR = BASE_TEMP_DIR / "uploads"
 OUTPUT_DIR = BASE_TEMP_DIR / "compressed"
-MAX_FILE_SIZE = 50 * 1024 * 1024           # 50 MB
+MAX_FILE_SIZE = 50 * 1024 * 1024
 CLEANUP_HOURS = 24
-AUTO_PACK_THRESHOLD = 3                    # 3 ta faylda avtomatik ishlov
+AUTO_PACK_THRESHOLD = 3            # 3 ta faylda avtomatik ZIP
+API_TIMEOUT = 300                  # 5 daqiqa
 
-# Timeout sozlamalari (5 daqiqa)
-API_TIMEOUT = 300
-CONN_TIMEOUT = 60
-READ_TIMEOUT = 300
-WRITE_TIMEOUT = 300
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Bot sesiyasini timeout bilan yaratish
-session = AiohttpSession(
-    timeout=API_TIMEOUT,
-    read_timeout=READ_TIMEOUT,
-    write_timeout=WRITE_TIMEOUT,
-    conn_timeout=CONN_TIMEOUT
-)
+session = AiohttpSession(timeout=API_TIMEOUT)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"), session=session)
 dp = Dispatcher()
 
-# Foydalanuvchi seanslari
-user_sessions: Dict[int, Dict] = {}   # { user_id: {"files": [...], "auto_mode": bool} }
+# Foydalanuvchi seanslari: { user_id: {"files": [...], "auto_mode": bool} }
+user_sessions: Dict[int, Dict] = {}
 
 # ========== YORDAMCHI FUNKSIYALAR ==========
 def ensure_dirs():
@@ -80,7 +68,10 @@ def format_size(size: int) -> str:
     return f"{size:.2f} GB"
 
 def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
-    """ZIP ichidagi rasmlarni siqish (DOCX/PPTX uchun)"""
+    """
+    DOCX yoki PPTX fayl (aslida ZIP) ichidagi barcha rasmlarni siqadi.
+    Qaytaradi: nechta rasm siqilganligi.
+    """
     temp_extract = BASE_TEMP_DIR / f"extract_{datetime.now().timestamp()}"
     temp_extract.mkdir()
     count = 0
@@ -101,7 +92,7 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
                         img.save(img_path, optimize=True, quality=quality)
                         count += 1
                 except Exception as e:
-                    logger.warning(f"Rasm siqish xatosi: {e}")
+                    logger.warning(f"Rasm siqish xatosi {img_path}: {e}")
         new_zip = zip_path.with_name(f"compressed_{zip_path.name}")
         with zipfile.ZipFile(new_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
             for file in temp_extract.rglob("*"):
@@ -114,19 +105,24 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
     return count
 
 def compress_docx_pptx(input_path: Path, output_path: Path, file_type: str) -> Tuple[bool, str, int]:
+    """DOCX/PPTX ni nusxalab, ichidagi rasmlarni siqadi"""
     try:
         shutil.copy2(input_path, output_path)
-        img_count = compress_images_in_zip(output_path)
+        img_count = compress_images_in_zip(output_path, quality=85)
         orig = input_path.stat().st_size
         new = output_path.stat().st_size
         reduction = (1 - new/orig) * 100 if orig else 0
-        msg = f"✅ {file_type.upper()} siqildi! {format_size(new)} ({reduction:.1f}% kichraydi)\n📸 {img_count} ta rasm optimallashtirildi."
+        msg = (f"✅ {file_type.upper()} siqildi! "
+               f"{format_size(new)} ({reduction:.1f}% kichraydi) – {img_count} ta rasm optimallashtirildi.")
         return True, msg, new
     except Exception as e:
         return False, f"❌ Xatolik: {str(e)}", 0
 
 def create_categorized_zip(files_data: List[Dict], zip_name: str) -> Path:
-    """files_data: [{"path": Path, "arcname": str}]"""
+    """
+    files_data: [{"path": Path, "category": str, "arcname": str}]
+    ZIP ichida kategoriya papkalari: PDF/, DOCX/, PPTX/
+    """
     zip_path = OUTPUT_DIR / zip_name
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for item in files_data:
@@ -154,91 +150,79 @@ def cleanup_old_files():
                         pass
 
 async def send_document_with_retry(message: Message, document, filename: str, caption: str, retries: int = 3):
-    """Faylni 3 martagacha qayta urinish bilan jo‘natadi"""
     for attempt in range(retries):
         try:
             return await message.answer_document(document, filename=filename, caption=caption)
         except (TelegramNetworkError, TimeoutError, asyncio.TimeoutError) as e:
             if attempt == retries - 1:
                 raise
-            wait = (attempt + 1) * 5  # 5, 10, 15 sekund
-            await message.answer(f"⏳ Tarmoq xatosi, qayta urinish ({attempt+1}/{retries})... Kutish {wait}s")
+            wait = (attempt + 1) * 5
+            await message.answer(f"⏳ Tarmoq xatosi, qayta urinish ({attempt+1}/{retries})...")
             await asyncio.sleep(wait)
     return None
 
-# ========== ASOSIY ISHLOV BERISH FUNKSIYASI ==========
+# ========== ASOSIY ISHLOV BERISH ==========
 async def process_and_pack(user_id: int, message: Message):
+    """Barcha saqlangan fayllarni qayta ishlaydi (DOCX/PPTX siqiladi, PDF o‘zgarishsiz) va ZIP yuboradi"""
     session_data = user_sessions.get(user_id, {"files": []})
     files = session_data.get("files", [])
     if not files:
         await message.answer("📭 Hech qanday fayl saqlanmagan.")
         return
 
-    status_msg = await message.answer(f"⏳ {len(files)} ta fayl qayta ishlanmoqda... Bu bir necha daqiqa olishi mumkin.")
+    status_msg = await message.answer(f"⏳ {len(files)} ta fayl qayta ishlanmoqda...")
     ensure_dirs()
 
-    # Fayllarni turlari bo‘yicha ajratish
-    pdf_paths = []
-    docx_files = []
-    pptx_files = []
+    # Ajratish
+    pdf_files = []      # [(original_path, original_name)]
+    docx_files = []     # [(original_path, original_name)]
+    pptx_files = []     # [(original_path, original_name)]
     for f in files:
-        orig_path = Path(f["path"])
-        ftype = f["type"]
-        if ftype == "pdf":
-            pdf_paths.append(orig_path)
-        elif ftype == "docx":
-            docx_files.append((orig_path, f["name"]))
-        elif ftype == "pptx":
-            pptx_files.append((orig_path, f["name"]))
+        path = Path(f["path"])
+        name = f["name"]
+        ft = f["type"]
+        if ft == "pdf":
+            pdf_files.append((path, name))
+        elif ft == "docx":
+            docx_files.append((path, name))
+        elif ft == "pptx":
+            pptx_files.append((path, name))
 
-    compressed_items = []
+    compressed_items = []  # {"path": Path, "arcname": str}
     results = []
     total_original = sum(f["size"] for f in files)
     total_processed = 0
 
-    # 1. PDF larni birlashtirish
-    if pdf_paths:
-        merged_pdf_path = OUTPUT_DIR / f"merged_pdfs_{datetime.now().timestamp()}.pdf"
-        try:
-            if len(pdf_paths) == 1:
-                shutil.copy2(pdf_paths[0], merged_pdf_path)
-                size = merged_pdf_path.stat().st_size
-                results.append(f"📄 PDF: bitta fayl → {format_size(size)}")
-            else:
-                merger = PdfWriter()
-                for path in pdf_paths:
-                    reader = PdfReader(path)
-                    for page in reader.pages:
-                        merger.add_page(page)
-                merger.write(merged_pdf_path)
-                merger.close()
-                size = merged_pdf_path.stat().st_size
-                results.append(f"🔗 PDF: {len(pdf_paths)} ta birlashtirildi → {format_size(size)}")
-            total_processed += size
-            compressed_items.append({"path": merged_pdf_path, "arcname": "PDF/merged_documents.pdf"})
-        except Exception as e:
-            results.append(f"❌ PDF xatosi: {str(e)}")
-    else:
-        results.append("📭 PDF fayllar topilmadi.")
+    # 1. PDF fayllar (o‘zgarishsiz)
+    for src, name in pdf_files:
+        dest = OUTPUT_DIR / f"pdf_{datetime.now().timestamp()}_{name}"
+        shutil.copy2(src, dest)
+        compressed_items.append({
+            "path": dest,
+            "arcname": f"PDF/{name}"
+        })
+        size = dest.stat().st_size
+        total_processed += size
+        results.append(f"📄 PDF: {name} → {format_size(size)} (o‘zgarishsiz)")
 
-    # 2. DOCX larni siqish
-    for path, name in docx_files:
+    # 2. DOCX fayllarni siqish
+    for src, name in docx_files:
         out = OUTPUT_DIR / f"compressed_{name}"
-        success, msg, size = compress_docx_pptx(path, out, "docx")
-        if success:
+        ok, msg, sz = compress_docx_pptx(src, out, "docx")
+        if ok:
             compressed_items.append({"path": out, "arcname": f"DOCX/{name}"})
-            total_processed += size
+            total_processed += sz
             results.append(msg)
         else:
             results.append(f"❌ {name}: {msg}")
 
-    # 3. PPTX larni siqish
-    for path, name in pptx_files:
+    # 3. PPTX fayllarni siqish
+    for src, name in pptx_files:
         out = OUTPUT_DIR / f"compressed_{name}"
-        success, msg, size = compress_docx_pptx(path, out, "pptx")
-        if success:
+        ok, msg, sz = compress_docx_pptx(src, out, "pptx")
+        if ok:
             compressed_items.append({"path": out, "arcname": f"PPTX/{name}"})
-            total_processed += size
+            total_processed += sz
             results.append(msg)
         else:
             results.append(f"❌ {name}: {msg}")
@@ -247,15 +231,13 @@ async def process_and_pack(user_id: int, message: Message):
         await status_msg.edit_text("❌ Hech qanday fayl qayta ishlanmadi.")
         return
 
-    # ZIP arxiv yaratish
+    # ZIP yaratish
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_name = f"processed_files_{timestamp}.zip"
     zip_path = create_categorized_zip(compressed_items, zip_name)
 
-    # Hisobot matni
-    summary = "📊 <b>Hisobot:</b>\n" + "\n".join(results[:15])
-    if len(results) > 15:
-        summary += f"\n... va {len(results)-15} ta fayl"
+    # Hisobot
+    summary = "📊 <b>Hisobot:</b>\n" + "\n".join(results[:20])
     summary += f"\n\n📦 Original hajm: {format_size(total_original)}"
     summary += f"\n💾 Qayta ishlangan hajm: {format_size(total_processed)}"
     saved = total_original - total_processed
@@ -263,13 +245,13 @@ async def process_and_pack(user_id: int, message: Message):
         percent = (saved / total_original) * 100
         summary += f"\n📉 Tejalgan: {format_size(saved)} ({percent:.1f}%)"
 
-    # ZIP faylni qayta urinish bilan yuborish
+    # Yuborish
     try:
         with open(zip_path, 'rb') as f:
             doc = BufferedInputFile(f.read(), filename=zip_name)
             await send_document_with_retry(message, doc, zip_name, summary)
     except Exception as e:
-        await status_msg.edit_text(f"❌ Faylni jo‘natishda xatolik: {str(e)[:200]}")
+        await status_msg.edit_text(f"❌ Jo‘natishda xatolik: {str(e)[:200]}")
     finally:
         await status_msg.delete()
 
@@ -295,12 +277,12 @@ async def auto_pack_if_needed(user_id: int, message: Message):
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     text = f"""
-<b>📎 Universal File Processor Bot</b>
+<b>📎 DOCX/PPTX Compressor + ZIP Bot</b>
 
-<b>Qanday ishlaydi:</b>
-• PDF → <b>birlashtiriladi</b> (merge) → bitta PDF (siqilmaydi)
-• DOCX / PPTX → ichidagi rasmlar siqilib, hajmi kichrayadi
-• Barcha qayta ishlangan fayllar <b>bitta ZIP</b> arxivda kategoriyalarga ajratiladi
+<b>Ishlash tartibi:</b>
+• PDF → o‘zgarishsiz, ZIP ichida <b>PDF/</b> papkasiga joylanadi.
+• DOCX / PPTX → ichidagi rasmlar siqilib, hajmi kichraytiriladi, so‘ng ZIP ichida <b>DOCX/</b> yoki <b>PPTX/</b> papkasiga joylanadi.
+• Bir nechta fayl yuborilsa, barchasini bitta ZIP arxivda kategoriyalarga ajratib beraman.
 
 <b>🔧 Buyruqlar:</b>
 • Fayl yuboring (PDF, DOCX, PPTX)
@@ -310,7 +292,7 @@ async def start_cmd(message: Message):
 • <b>/clear</b> – saqlangan fayllarni tozalash
 • <b>/stats</b> – statistika
 
-⚠️ Hech qanday siqish (Ghostscript) kerak emas. PDF faqat birlashtiriladi.
+⚠️ Hech qanday qo‘shimcha kutish yoki PDF birlashtirish yo‘q.
 """
     await message.answer(text)
 
@@ -327,8 +309,7 @@ async def auto_cmd(message: Message):
 @dp.message(Command("list"))
 async def list_cmd(message: Message):
     user_id = message.from_user.id
-    session_data = user_sessions.get(user_id, {"files": []})
-    files = session_data.get("files", [])
+    files = user_sessions.get(user_id, {}).get("files", [])
     if not files:
         await message.answer("📭 Hech qanday fayl saqlanmagan.")
         return
@@ -422,7 +403,7 @@ async def handle_document(message: Message):
 
 @dp.message()
 async def unknown(message: Message):
-    await message.answer("❓ Tushunarsiz. /help yordam beradi. Fayl yuboring (PDF, DOCX, PPTX)")
+    await message.answer("❓ Tushunarsiz. /start bilan boshlang yoki PDF/DOCX/PPTX fayl yuboring.")
 
 # ========== ISHGA TUSHIRISH ==========
 async def on_shutdown():
@@ -441,7 +422,7 @@ async def main():
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(sig)))
 
     print("="*50)
-    print("🤖 Universal File Processor Bot (PDF merge + DOCX/PPTX compress)")
+    print("🤖 DOCX/PPTX Compressor + ZIP Bot (PDF o‘zgarishsiz)")
     print(f"✅ Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:] if len(BOT_TOKEN)>15 else ''}")
     ensure_dirs()
     cleanup_old_files()
