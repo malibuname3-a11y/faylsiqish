@@ -335,8 +335,7 @@ async def handle_photo(msg: Message):
 async def start_cmd(msg: Message):
     await msg.answer(
         "📦 **To‘liq funksiyali ZIP bot**\n\n"
-        "• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n"
-        "• Rasmlar → bitta PDF (`IMAGES/combined_images.pdf`)\n"
+        "• rasmlarni zip qilish.\n"
         "• DOCX/PPTX ichidagi rasmlar siqilishi mumkin (`/mode compress`)\n"
         "• Natija – bitta ZIP arxiv (kategoriyalarga ajratilgan)\n\n"
         "🔹 `/mode compress|fast` – siqish yoki tez rejim\n"
