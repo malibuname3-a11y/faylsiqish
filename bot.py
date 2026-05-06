@@ -44,15 +44,17 @@ def get_bot_token():
                      "3. token.txt fayl yarating va ichiga tokeningizni yozing")
 
 def get_ghostscript_path():
-    """Ghostscript ijro etiladigan faylini avtomatik topish"""
-    # Mumkin bo'lgan nomlar
-    gs_names = ["gs", "gswin64c", "gswin32c", "ghostscript"]
+    # Standart qidiruv
+    gs = shutil.which("gswin64c") or shutil.which("gswin32c") or shutil.which("gs")
+    if gs:
+        return gs
     
-    # 1. PATH dan qidirish
-    for name in gs_names:
-        gs_path = shutil.which(name)
-        if gs_path:
-            return gs_path
+    # Qo‘lda qo‘shish (o‘z papkangizni yozing!)
+    manual_path = r"C:\Program Files\gs\gs10.07.0\bin\gswin64c.exe"
+    if os.path.exists(manual_path):
+        return manual_path
+    
+    return None
     
     # 2. Windows standart joylari
     if os.name == 'nt':  # Windows
