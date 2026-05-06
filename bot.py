@@ -292,7 +292,6 @@ async def start_cmd(message: Message):
 • <b>/clear</b> – saqlangan fayllarni tozalash
 • <b>/stats</b> – statistika
 
-⚠️ Hech qanday qo‘shimcha kutish yoki PDF birlashtirish yo‘q.
 """
     await message.answer(text)
 
