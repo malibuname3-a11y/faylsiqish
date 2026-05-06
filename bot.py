@@ -13,7 +13,6 @@ from aiogram.types import Message, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError
 from PIL import Image
 import img2pdf
 from pypdf import PdfWriter, PdfReader
@@ -26,10 +25,10 @@ def get_token():
 
 BOT_TOKEN = get_token()
 if not BOT_TOKEN:
-    raise ValueError("Token topilmadi. Iltimos, token.txt fayl yarating yoki BOT_TOKEN muhit o‘zgaruvchisini o‘rnating.")
+    raise ValueError("Token topilmadi")
 
 # ========== SOZLAMALAR ==========
-BASE_DIR = Path(tempfile.gettempdir()) / "full_bot"
+BASE_DIR = Path(tempfile.gettempdir()) / "full_bot_fixed"
 TEMP_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -45,22 +44,22 @@ session = AiohttpSession(timeout=API_TIMEOUT)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"), session=session)
 dp = Dispatcher()
 
-# ========== TILLAR (HTML xatosi tuzatilgan) ==========
+# ========== TILLAR (HTML TAGLAR TO‘G‘RILANGAN) ==========
 TEXTS = {
     "uz": {
-        "start": "📦 **To‘liq funksiyali bot**\n\n• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n• Rasmlar → bitta PDF\n• DOCX/PPTX ichidagi rasmlar siqilishi mumkin.\n• Natija – ZIP yoki bitta PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – 3 ta faylda avtomatik ishlov\n🔹 /pack – qo‘lda ishlov\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;parol&gt;\n🔹 /lang uz|en|ru\n\nHozirgi rejim: fast, format: zip, sifat: 85",
+        "start": "📦 <b>To‘liq funksiyali bot</b>\n\n• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n• Rasmlar → bitta PDF\n• DOCX/PPTX ichidagi rasmlar siqilishi mumkin.\n• Natija – ZIP yoki bitta PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – 3 ta faylda avtomatik ishlov\n🔹 /pack – qo‘lda ishlov\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;parol&gt;\n🔹 /lang uz|en|ru\n\nHozirgi rejim: fast, format: zip, sifat: 85",
         "file_saved": "✅ {} saqlandi. Jami: {} ta fayl.",
         "no_files": "📭 Saqlangan fayl yo‘q.",
         "processing": "⏳ {} ta fayl qayta ishlanmoqda (rejim: {}, format: {})...",
         "error": "❌ Xatolik: {}",
         "cleared": "🧹 Barcha fayllar tozalandi.",
-        "mode_changed": "✅ Rejim o‘zgartirildi: **{}**",
+        "mode_changed": "✅ Rejim o‘zgartirildi: <b>{}</b>",
         "auto_on": "⚙️ Avtomatik rejim YOQILDI ({} ta faylda)",
         "auto_off": "⚙️ Avtomatik rejim O‘CHIRILDI",
-        "format_changed": "✅ Chiqish formati **{}** ga o‘zgartirildi.",
-        "quality_changed": "✅ Rasm siqish sifati **{}** ga o‘zgartirildi.",
+        "format_changed": "✅ Chiqish formati <b>{}</b> ga o‘zgartirildi.",
+        "quality_changed": "✅ Rasm siqish sifati <b>{}</b> ga o‘zgartirildi.",
         "password_set": "✅ PDF paroli o‘rnatildi.",
-        "lang_changed": "✅ Til **{}** ga o‘zgartirildi.",
+        "lang_changed": "✅ Til <b>{}</b> ga o‘zgartirildi.",
         "remove_usage": "❌ Ishlating: /remove &lt;raqam&gt; (1 dan {}) gacha",
         "removed": "✅ {} o‘chirildi. Qolgan: {} ta fayl.",
         "sort_usage": "❌ Ishlating: /sort name|date|size",
@@ -72,19 +71,19 @@ TEXTS = {
         "only_images_pdf": "⚠️ Bitta PDF formati faqat rasm va PDF fayllar qatnashganda ishlaydi. DOCX/PPTX bo‘lsa ZIP qilinadi."
     },
     "en": {
-        "start": "📦 **Full-featured bot**\n\n• I accept PDF, DOCX, PPTX and images.\n• Images → single PDF\n• DOCX/PPTX can compress internal images.\n• Output – ZIP or single PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – auto process after 3 files\n🔹 /pack – manual process\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;password&gt;\n🔹 /lang uz|en|ru\n\nCurrent mode: fast, format: zip, quality: 85",
+        "start": "📦 <b>Full-featured bot</b>\n\n• I accept PDF, DOCX, PPTX and images.\n• Images → single PDF\n• DOCX/PPTX can compress internal images.\n• Output – ZIP or single PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – auto process after 3 files\n🔹 /pack – manual process\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;password&gt;\n🔹 /lang uz|en|ru\n\nCurrent mode: fast, format: zip, quality: 85",
         "file_saved": "✅ {} saved. Total: {} files.",
         "no_files": "📭 No files saved.",
         "processing": "⏳ Processing {} files (mode: {}, format: {})...",
         "error": "❌ Error: {}",
         "cleared": "🧹 All files cleared.",
-        "mode_changed": "✅ Mode changed to: **{}**",
+        "mode_changed": "✅ Mode changed to: <b>{}</b>",
         "auto_on": "⚙️ Auto mode ENABLED (after {} files)",
         "auto_off": "⚙️ Auto mode DISABLED",
-        "format_changed": "✅ Output format changed to **{}**.",
-        "quality_changed": "✅ Image compression quality set to **{}**.",
+        "format_changed": "✅ Output format changed to <b>{}</b>.",
+        "quality_changed": "✅ Image compression quality set to <b>{}</b>.",
         "password_set": "✅ PDF password set.",
-        "lang_changed": "✅ Language changed to **{}**.",
+        "lang_changed": "✅ Language changed to <b>{}</b>.",
         "remove_usage": "❌ Usage: /remove &lt;number&gt; (1 to {})",
         "removed": "✅ {} removed. Remaining: {} files.",
         "sort_usage": "❌ Usage: /sort name|date|size",
@@ -96,19 +95,19 @@ TEXTS = {
         "only_images_pdf": "⚠️ Single PDF format works only when there are only images and PDFs. DOCX/PPTX will be zipped instead."
     },
     "ru": {
-        "start": "📦 **Полнофункциональный бот**\n\n• Принимаю PDF, DOCX, PPTX и изображения.\n• Изображения → один PDF\n• DOCX/PPTX могут сжимать внутренние изображения.\n• Результат – ZIP или один PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – автообработка после 3 файлов\n🔹 /pack – ручная обработка\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;пароль&gt;\n🔹 /lang uz|en|ru\n\nТекущий режим: fast, формат: zip, качество: 85",
+        "start": "📦 <b>Полнофункциональный бот</b>\n\n• Принимаю PDF, DOCX, PPTX и изображения.\n• Изображения → один PDF\n• DOCX/PPTX могут сжимать внутренние изображения.\n• Результат – ZIP или один PDF.\n\n🔹 /mode compress|fast\n🔹 /format zip|pdf\n🔹 /auto – автообработка после 3 файлов\n🔹 /pack – ручная обработка\n🔹 /list, /clear, /stats\n🔹 /quality 1-100\n🔹 /remove &lt;n&gt;\n🔹 /sort name|date|size\n🔹 /password &lt;пароль&gt;\n🔹 /lang uz|en|ru\n\nТекущий режим: fast, формат: zip, качество: 85",
         "file_saved": "✅ {} сохранён. Всего: {} файлов.",
         "no_files": "📭 Нет сохранённых файлов.",
         "processing": "⏳ Обработка {} файлов (режим: {}, формат: {})...",
         "error": "❌ Ошибка: {}",
         "cleared": "🧹 Все файлы удалены.",
-        "mode_changed": "✅ Режим изменён на: **{}**",
+        "mode_changed": "✅ Режим изменён на: <b>{}</b>",
         "auto_on": "⚙️ Авторежим ВКЛЮЧЁН (после {} файлов)",
         "auto_off": "⚙️ Авторежим ВЫКЛЮЧЁН",
-        "format_changed": "✅ Выходной формат изменён на **{}**.",
-        "quality_changed": "✅ Качество сжатия изображений установлено: **{}**.",
+        "format_changed": "✅ Выходной формат изменён на <b>{}</b>.",
+        "quality_changed": "✅ Качество сжатия изображений установлено: <b>{}</b>.",
         "password_set": "✅ Пароль для PDF установлен.",
-        "lang_changed": "✅ Язык изменён на **{}**.",
+        "lang_changed": "✅ Язык изменён на <b>{}</b>.",
         "remove_usage": "❌ Использование: /remove &lt;номер&gt; (от 1 до {})",
         "removed": "✅ {} удалён. Осталось: {} файлов.",
         "sort_usage": "❌ Использование: /sort name|date|size",
@@ -121,13 +120,17 @@ TEXTS = {
     }
 }
 
-def get_text(user_id: int, key: str, *args):
-    lang = user_sessions.get(user_id, {}).get("lang", DEFAULT_LANG)
+def get_text(user_id: int, key: str, *args) -> str:
+    """Foydalanuvchi tilida matn qaytaradi"""
+    user = user_sessions.get(user_id)
+    lang = DEFAULT_LANG
+    if user and "lang" in user:
+        lang = user["lang"]
     text = TEXTS.get(lang, TEXTS["uz"]).get(key, TEXTS["uz"][key])
     return text.format(*args) if args else text
 
 # ========== USER DATA ==========
-user_sessions: Dict[int, Dict] = {}  # {user_id: {"files": [...], "mode": "fast"/"compress", "auto": bool, "format": "zip"/"pdf", "quality": int, "password": str, "lang": str, "sort_by": str}}
+user_sessions: Dict[int, Dict] = {}
 
 def ensure_dirs():
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -232,35 +235,25 @@ def create_zip(files_data: List[Dict], zip_name: str) -> Path:
             zf.write(item["path"], item["arcname"])
     return zip_path
 
-def create_single_pdf(files_data: List[Dict], output_pdf: Path, quality: int, password: Optional[str] = None) -> bool:
+def create_single_pdf(files_data: List[Dict], output_pdf: Path, password: Optional[str] = None) -> bool:
     writer = PdfWriter()
     for item in files_data:
         if item["type"] == "pdf":
-            try:
-                reader = PdfReader(item["path"])
-                for page in reader.pages:
-                    writer.add_page(page)
-            except Exception as e:
-                logger.error(f"PDF o‘qish xatosi: {e}")
-                return False
+            reader = PdfReader(item["path"])
+            for page in reader.pages:
+                writer.add_page(page)
         elif item["type"] == "image":
-            img_pdf = output_pdf.parent / f"temp_img_{datetime.now().timestamp()}.pdf"
-            if images_to_pdf([item["path"]], img_pdf, quality):
+            img_pdf = item["path"].parent / f"temp_img_{datetime.now().timestamp()}.pdf"
+            if images_to_pdf([item["path"]], img_pdf, 85):
                 reader = PdfReader(img_pdf)
                 for page in reader.pages:
                     writer.add_page(page)
                 img_pdf.unlink()
-            else:
-                return False
     if password:
         writer.encrypt(password)
-    try:
-        with open(output_pdf, "wb") as f:
-            writer.write(f)
-        return True
-    except Exception as e:
-        logger.error(f"PDF yozish xatosi: {e}")
-        return False
+    with open(output_pdf, "wb") as f:
+        writer.write(f)
+    return True
 
 def cleanup_user(user_id: int):
     if user_id in user_sessions:
@@ -285,20 +278,18 @@ async def process_files(user_id: int, message: Message):
     password = session.get("password", None)
     sort_by = session.get("sort_by", "date")
     
-    # Saralash
     if sort_by == "name":
         files.sort(key=lambda x: x["name"])
     elif sort_by == "size":
         files.sort(key=lambda x: x["size"])
-    else:  # date
+    else:
         files.sort(key=lambda x: x.get("timestamp", 0))
 
     msg_text = get_text(user_id, "processing", len(files), mode, fmt)
     status = await message.answer(msg_text)
     ensure_dirs()
 
-    # Ajratish
-    pdf_list = []   # each: {"src": Path, "name": str}
+    pdf_list = []
     docx_list = []
     pptx_list = []
     image_list = []
@@ -327,7 +318,7 @@ async def process_files(user_id: int, message: Message):
             all_items.append({"path": p["src"], "type": "pdf"})
         for img in image_list:
             all_items.append({"path": img["src"], "type": "image"})
-        success = create_single_pdf(all_items, combined_pdf, quality, password)
+        success = create_single_pdf(all_items, combined_pdf, password)
         if success:
             total_processed = combined_pdf.stat().st_size
             results.append(f"✅ Bitta PDF yaratildi: {format_size(total_processed)}")
@@ -344,12 +335,10 @@ async def process_files(user_id: int, message: Message):
             await status.edit_text(get_text(user_id, "error", "PDF yaratilmadi"))
             return
 
-    # Aks holda ZIP yaratish
-    processed_items = []  # {"path": Path, "arcname": str}
+    processed_items = []
     total_steps = len(pdf_list) + len(docx_list) + len(pptx_list) + (1 if image_list else 0)
     step = 0
 
-    # Rasmlarni bitta PDF ga birlashtirish
     if image_list:
         combined_pdf = OUTPUT_DIR / f"combined_images_{datetime.now().timestamp()}.pdf"
         img_paths = [img["src"] for img in image_list]
@@ -363,8 +352,7 @@ async def process_files(user_id: int, message: Message):
         step += 1
         await status.edit_text(get_text(user_id, "progress", step/total_steps*100))
 
-    # PDF fayllar
-    for p in pdf_list:
+    for idx, p in enumerate(pdf_list):
         dst = OUTPUT_DIR / f"pdf_{datetime.now().timestamp()}_{p['name']}"
         ok, msg, sz = copy_pdf(p["src"], dst, p["name"])
         if ok:
@@ -376,7 +364,6 @@ async def process_files(user_id: int, message: Message):
         step += 1
         await status.edit_text(get_text(user_id, "progress", step/total_steps*100))
 
-    # DOCX
     for d in docx_list:
         dst = OUTPUT_DIR / f"docx_{datetime.now().timestamp()}_{d['name']}"
         ok, msg, sz = process_docx_pptx(d["src"], dst, "docx", mode, quality)
@@ -389,7 +376,6 @@ async def process_files(user_id: int, message: Message):
         step += 1
         await status.edit_text(get_text(user_id, "progress", step/total_steps*100))
 
-    # PPTX
     for p in pptx_list:
         dst = OUTPUT_DIR / f"pptx_{datetime.now().timestamp()}_{p['name']}"
         ok, msg, sz = process_docx_pptx(p["src"], dst, "pptx", mode, quality)
@@ -406,7 +392,6 @@ async def process_files(user_id: int, message: Message):
         await status.edit_text(get_text(user_id, "error", "Hech narsa qayta ishlanmadi"))
         return
 
-    # ZIP yaratish
     zip_name = f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
     zip_path = create_zip(processed_items, zip_name)
 
@@ -421,7 +406,6 @@ async def process_files(user_id: int, message: Message):
         await message.answer_document(BufferedInputFile(f.read(), filename=zip_name), caption=summary)
     await status.delete()
 
-    # Tozalash
     cleanup_user(user_id)
     zip_path.unlink()
     for item in processed_items:
@@ -596,7 +580,7 @@ async def format_cmd(msg: Message):
 async def quality_cmd(msg: Message):
     args = msg.text.split()
     if len(args) != 2 or not args[1].isdigit():
-        await msg.answer("❌ Ishlating: /quality &lt;1-100&gt;")
+        await msg.answer("❌ Ishlating: /quality <1-100>")
         return
     q = int(args[1])
     if q < 1 or q > 100:
@@ -621,7 +605,7 @@ async def quality_cmd(msg: Message):
 async def password_cmd(msg: Message):
     args = msg.text.split()
     if len(args) != 2:
-        await msg.answer("❌ Ishlating: /password &lt;parol&gt;")
+        await msg.answer("❌ Ishlating: /password <parol>")
         return
     uid = msg.from_user.id
     if uid not in user_sessions:
@@ -740,7 +724,7 @@ async def unknown(msg: Message):
     await msg.answer("❓ Tushunarsiz. /start bilan boshlang yoki fayl/rasm yuboring.")
 
 async def main():
-    print("🚀 Bot ishga tushdi (barcha funksiyalar qo‘shilgan).")
+    print("🚀 Bot ishga tushdi (barcha funksiyalar qo‘shilgan, til o‘zgartirish tuzatilgan).")
     ensure_dirs()
     await dp.start_polling(bot)
 
