@@ -3,28 +3,136 @@ import zipfile
 import shutil
 import asyncio
 import logging
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Union
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BufferedInputFile
 from aiogram.filters import Command
 from PIL import Image
 
-# ========== KONFIGURATSIYA ==========
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # BotFather dan olingan token
+# ========== KONFIGURATSIYA - AVTOMATIK TOPISH ==========
 
-# Papkalar
-TEMP_DIR = Path("temp_files")
-COMPRESSED_DIR = Path("compressed_files")
+def get_bot_token():
+    """Bot tokenini avtomatik topish (environment variable yoki fayldan)"""
+    # 1. Environment variable dan olish
+    token = os.environ.get("BOT_TOKEN")
+    if token:
+        return token
+    
+    # 2. .env fayldan o'qish
+    env_file = Path(".env")
+    if env_file.exists():
+        with open(env_file, 'r') as f:
+            for line in f:
+                if line.startswith("BOT_TOKEN="):
+                    return line.strip().split("=", 1)[1].strip().strip('"').strip("'")
+    
+    # 3. token.txt fayldan o'qish
+    token_file = Path("token.txt")
+    if token_file.exists():
+        with open(token_file, 'r') as f:
+            return f.read().strip()
+    
+    # 4. Hech narsa topilmasa
+    raise ValueError("❌ Bot token topilmadi! Iltimos, quyidagi usullardan birini ishlating:\n"
+                     "1. Environment variable: export BOT_TOKEN='sizning_tokingiz'\n"
+                     "2. .env fayl yarating: BOT_TOKEN='sizning_tokingiz'\n"
+                     "3. token.txt fayl yarating va ichiga tokeningizni yozing")
 
-# Fayl hajm chegaralari (baytlarda)
-MAX_FILE_SIZE = 50 * 1024 * 1024  # Telegram bot uchun 50MB
+def get_ghostscript_path():
+    """Ghostscript ijro etiladigan faylini avtomatik topish"""
+    # Mumkin bo'lgan nomlar
+    gs_names = ["gs", "gswin64c", "gswin32c", "ghostscript"]
+    
+    # 1. PATH dan qidirish
+    for name in gs_names:
+        gs_path = shutil.which(name)
+        if gs_path:
+            return gs_path
+    
+    # 2. Windows standart joylari
+    if os.name == 'nt':  # Windows
+        possible_paths = [
+            r"C:\Program Files\gs\gs*\bin\gswin64c.exe",
+            r"C:\Program Files (x86)\gs\gs*\bin\gswin32c.exe",
+            r"C:\Ghostscript\bin\gswin64c.exe",
+        ]
+        
+        import glob
+        for pattern in possible_paths:
+            matches = glob.glob(pattern)
+            if matches:
+                return matches[0]
+    
+    # 3. Linux/Mac standart joylari
+    elif os.name == 'posix':
+        possible_paths = [
+            "/usr/bin/gs",
+            "/usr/local/bin/gs",
+            "/opt/local/bin/gs",
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+    
+    return None
+
+def get_temp_dir():
+    """Vaqtinchalik papka joyini aniqlash"""
+    # 1. Environment variable
+    temp_dir = os.environ.get("BOT_TEMP_DIR")
+    if temp_dir:
+        return Path(temp_dir)
+    
+    # 2. Sistemaning vaqtinchalik papkasi
+    system_temp = tempfile.gettempdir()
+    bot_temp = Path(system_temp) / "file_compressor_bot"
+    
+    return bot_temp
+
+def get_output_dir():
+    """Siqilgan fayllar papkasini aniqlash"""
+    # 1. Environment variable
+    output_dir = os.environ.get("BOT_OUTPUT_DIR")
+    if output_dir:
+        return Path(output_dir)
+    
+    # 2. Joriy papkadagi output papkasi
+    current_dir = Path.cwd() / "compressed_files"
+    return current_dir
+
+# ========== AVTOMATIK TOPILGAN SOZLAMALAR ==========
+
+try:
+    BOT_TOKEN = get_bot_token()
+    GHOSTSCRIPT_PATH = get_ghostscript_path()
+    TEMP_DIR = get_temp_dir()
+    OUTPUT_DIR = get_output_dir()
+    
+    # Fayl hajm chegaralari (baytlarda)
+    MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", 50 * 1024 * 1024))  # default 50MB
+    
+    # PDF sifat sozlamalari
+    PDF_QUALITY = os.environ.get("PDF_QUALITY", "screen")  # screen, ebook, printer, prepress
+    
+    # Tozalash vaqti (soat)
+    CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 24))
+    
+    # Logging darajasi
+    LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+    
+except ValueError as e:
+    print(e)
+    exit(1)
 
 # Logging sozlamalari
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -35,16 +143,43 @@ dp = Dispatcher()
 
 # ========== YORDAMCHI FUNKSIYALAR ==========
 
+def get_system_info() -> dict:
+    """Tizim haqida ma'lumot yig'ish"""
+    info = {
+        "os": os.name,
+        "platform": "Unknown",
+        "python_version": "Unknown",
+        "ghostscript": GHOSTSCRIPT_PATH,
+        "temp_dir": str(TEMP_DIR),
+        "output_dir": str(OUTPUT_DIR),
+    }
+    
+    try:
+        import platform
+        info["platform"] = platform.platform()
+        info["python_version"] = platform.python_version()
+    except:
+        pass
+    
+    return info
+
 def ensure_directories():
     """Kerakli papkalarni yaratish"""
-    TEMP_DIR.mkdir(exist_ok=True)
-    COMPRESSED_DIR.mkdir(exist_ok=True)
-
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Papkalar mavjudligini tekshirish va log qilish
+    logger.info(f"Vaqtinchalik papka: {TEMP_DIR}")
+    logger.info(f"Chiqish papkasi: {OUTPUT_DIR}")
+    
+    if GHOSTSCRIPT_PATH:
+        logger.info(f"Ghostscript topildi: {GHOSTSCRIPT_PATH}")
+    else:
+        logger.warning("Ghostscript topilmadi! PDF siqish ishlamaydi.")
 
 def get_file_size_mb(file_path: Path) -> float:
     """Fayl hajmini MB da qaytaradi"""
     return file_path.stat().st_size / (1024 * 1024)
-
 
 def format_size(size_bytes: int) -> str:
     """Hajmni chiroyli formatda ko'rsatish"""
@@ -54,12 +189,19 @@ def format_size(size_bytes: int) -> str:
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} GB"
 
+def find_image_files(directory: Path) -> List[Path]:
+    """Papkadagi barcha rasm fayllarini topish"""
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tiff'}
+    images = []
+    
+    for ext in image_extensions:
+        images.extend(directory.rglob(f"*{ext}"))
+        images.extend(directory.rglob(f"*{ext.upper()}"))
+    
+    return images
 
 def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
-    """
-    ZIP ichidagi barcha rasm fayllarini siqish
-    Qaytaradi: nechta rasm siqilganligi
-    """
+    """ZIP ichidagi barcha rasm fayllarini siqish"""
     temp_extract = TEMP_DIR / f"extract_{datetime.now().timestamp()}"
     temp_extract.mkdir(exist_ok=True)
     
@@ -70,28 +212,27 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_extract)
         
-        # Barcha rasmlarni siqish
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif'}
+        # Barcha rasmlarni topish va siqish
+        images = find_image_files(temp_extract)
         
-        for root, dirs, files in os.walk(temp_extract):
-            for file in files:
-                file_path = Path(root) / file
-                
-                if file_path.suffix.lower() in image_extensions:
-                    try:
-                        # Rasmni ochish va siqish
-                        with Image.open(file_path) as img:
-                            if img.mode in ('RGBA', 'LA', 'P'):
-                                # PNG transparent - RGB ga o'tkazish
-                                rgb_img = Image.new('RGB', img.size, (255, 255, 255))
-                                rgb_img.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                                img = rgb_img
-                            
-                            # Rasmni saqlash
-                            img.save(file_path, optimize=True, quality=quality)
-                            compressed_count += 1
-                    except Exception as e:
-                        logger.warning(f"Rasm siqishda xatolik {file}: {e}")
+        for img_path in images:
+            try:
+                with Image.open(img_path) as img:
+                    # PNG transparent bo'lsa, RGB ga o'tkazish
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'RGBA':
+                            rgb_img.paste(img, mask=img.split()[-1])
+                        else:
+                            rgb_img.paste(img)
+                        img = rgb_img
+                    
+                    # Rasmni saqlash
+                    img.save(img_path, optimize=True, quality=quality)
+                    compressed_count += 1
+                    
+            except Exception as e:
+                logger.warning(f"Rasm siqishda xatolik {img_path}: {e}")
         
         # Yangi ZIP yaratish
         new_zip_path = zip_path.parent / f"compressed_{zip_path.name}"
@@ -103,7 +244,8 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
                     zip_ref.write(file_path, arcname)
         
         # Eski ZIP ni o'chirib, yangisini qo'yish
-        zip_path.unlink()
+        if zip_path.exists():
+            zip_path.unlink()
         new_zip_path.rename(zip_path)
         
     finally:
@@ -112,81 +254,70 @@ def compress_images_in_zip(zip_path: Path, quality: int = 85) -> int:
     
     return compressed_count
 
-
 def compress_docx(input_path: Path, output_path: Path, quality: int = 85) -> Tuple[bool, str]:
-    """
-    DOCX faylini siqish (ZIP ichidagi rasmlarni siqish orqali)
-    """
+    """DOCX faylini siqish"""
     try:
-        # DOCX = ZIP format
         shutil.copy2(input_path, output_path)
-        
-        # ZIP ichidagi rasmlarni siqish
         compressed_images = compress_images_in_zip(output_path, quality)
         
-        return True, f"✅ DOCX siqildi! {compressed_images} ta rasm optimallashtirildi."
+        original_size = input_path.stat().st_size
+        compressed_size = output_path.stat().st_size
+        reduction = (1 - compressed_size / original_size) * 100
+        
+        return True, f"✅ DOCX siqildi! {format_size(compressed_size)} ({reduction:.1f}% kichraydi)\n📸 {compressed_images} ta rasm optimallashtirildi."
     
     except Exception as e:
         logger.error(f"DOCX siqish xatosi: {e}")
         return False, f"❌ Xatolik: {str(e)}"
 
-
 def compress_pptx(input_path: Path, output_path: Path, quality: int = 85) -> Tuple[bool, str]:
-    """
-    PPTX faylini siqish (ZIP ichidagi rasmlarni siqish orqali)
-    """
+    """PPTX faylini siqish"""
     try:
-        # PPTX = ZIP format
         shutil.copy2(input_path, output_path)
-        
-        # ZIP ichidagi rasmlarni siqish
         compressed_images = compress_images_in_zip(output_path, quality)
         
-        return True, f"✅ PPTX siqildi! {compressed_images} ta rasm optimallashtirildi."
+        original_size = input_path.stat().st_size
+        compressed_size = output_path.stat().st_size
+        reduction = (1 - compressed_size / original_size) * 100
+        
+        return True, f"✅ PPTX siqildi! {format_size(compressed_size)} ({reduction:.1f}% kichraydi)\n📸 {compressed_images} ta rasm optimallashtirildi."
     
     except Exception as e:
         logger.error(f"PPTX siqish xatosi: {e}")
         return False, f"❌ Xatolik: {str(e)}"
 
-
-def compress_pdf(input_path: Path, output_path: Path, quality: str = "screen") -> Tuple[bool, str]:
-    """
-    PDF faylini Ghostscript yordamida siqish
-    quality: 'screen' (eng kichik), 'ebook', 'printer', 'prepress'
-    """
+def compress_pdf(input_path: Path, output_path: Path, quality: str = None) -> Tuple[bool, str]:
+    """PDF faylini Ghostscript yordamida siqish"""
+    
+    if quality is None:
+        quality = PDF_QUALITY
+    
     # Ghostscript mavjudligini tekshirish
-    gs_paths = ["gs", "gswin64c", "gswin32c"]
-    gs_cmd = None
-    
-    for path in gs_paths:
-        if shutil.which(path):
-            gs_cmd = path
-            break
-    
-    if not gs_cmd:
-        return False, "❌ Ghostscript topilmadi. PDF siqish uchun Ghostscript o'rnatishingiz kerak.\n\n" \
+    if not GHOSTSCRIPT_PATH:
+        return False, "❌ Ghostscript topilmadi! PDF siqish uchun Ghostscript o'rnating:\n\n" \
                       "Ubuntu/Debian: sudo apt install ghostscript\n" \
                       "Windows: https://ghostscript.com/releases/gsdnld.html\n" \
                       "Mac: brew install ghostscript"
     
     # PDF sifati sozlamalari
     quality_settings = {
-        "screen": "/screen",   # 72 dpi, eng kichik
+        "screen": "/screen",   # 72 dpi
         "ebook": "/ebook",     # 150 dpi
         "printer": "/printer", # 300 dpi
-        "prepress": "/prepress" # 300 dpi, yuqori sifat
+        "prepress": "/prepress" # 300 dpi yuqori
     }
     
     gs_device = quality_settings.get(quality, "/screen")
     
     try:
-        import subprocess
-        
         cmd = [
-            gs_cmd, "-sDEVICE=pdfwrite",
+            GHOSTSCRIPT_PATH, "-sDEVICE=pdfwrite",
             "-dCompatibilityLevel=1.4",
             f"-dPDFSETTINGS={gs_device}",
             "-dNOPAUSE", "-dQUIET", "-dBATCH",
+            "-dDetectDuplicateImages=true",
+            "-dCompressFonts=true",
+            "-dSubsetFonts=true",
             f"-sOutputFile={output_path}",
             str(input_path)
         ]
@@ -199,14 +330,16 @@ def compress_pdf(input_path: Path, output_path: Path, quality: str = "screen") -
             
             if compressed_size < original_size:
                 reduction = (1 - compressed_size / original_size) * 100
-                return True, f"✅ PDF siqildi! {format_size(compressed_size)} ({reduction:.1f}% kichraydi)"
+                quality_names = {"screen": "Ekran", "ebook": "Kitob", "printer": "Printer", "prepress": "Yuqori sifat"}
+                return True, f"✅ PDF siqildi! {format_size(compressed_size)} ({reduction:.1f}% kichraydi)\n📊 Sifat: {quality_names.get(quality, quality)}"
             else:
-                # Agar siqilmagan bo'lsa, originalni qaytarish yaxshiroq
-                output_path.unlink()
+                # Agar siqilmagan bo'lsa, originalni qaytarish
+                if output_path.exists():
+                    output_path.unlink()
                 shutil.copy2(input_path, output_path)
                 return True, "⚠️ PDF siqilmadi (fayl allaqachon optimallashtirilgan)"
         else:
-            return False, f"❌ PDF siqishda xatolik: {result.stderr[:200]}"
+            return False, f"❌ PDF siqishda xatolik: {result.stderr[:200] if result.stderr else 'Noma\'lum xatolik'}"
             
     except subprocess.TimeoutExpired:
         return False, "❌ Vaqt tugadi! PDF juda katta bo'lishi mumkin."
@@ -214,10 +347,9 @@ def compress_pdf(input_path: Path, output_path: Path, quality: str = "screen") -
         logger.error(f"PDF siqish xatosi: {e}")
         return False, f"❌ Xatolik: {str(e)}"
 
-
 def create_zip_archive(files: List[Path], zip_name: str) -> Path:
     """Siqilgan fayllarni ZIP arxivga joylashtirish"""
-    zip_path = COMPRESSED_DIR / zip_name
+    zip_path = OUTPUT_DIR / zip_name
     
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for file in files:
@@ -226,25 +358,27 @@ def create_zip_archive(files: List[Path], zip_name: str) -> Path:
     
     return zip_path
 
-
-def cleanup_old_files(max_age_hours: int = 24):
+def cleanup_old_files():
     """Eski vaqtinchalik fayllarni tozalash"""
     now = datetime.now().timestamp()
+    deleted_count = 0
     
-    for directory in [TEMP_DIR, COMPRESSED_DIR]:
+    for directory in [TEMP_DIR, OUTPUT_DIR]:
         if not directory.exists():
             continue
             
         for file in directory.iterdir():
             if file.is_file():
                 file_age = now - file.stat().st_mtime
-                if file_age > max_age_hours * 3600:
+                if file_age > CLEANUP_HOURS * 3600:
                     try:
                         file.unlink()
-                        logger.info(f"Tozalandi: {file.name}")
+                        deleted_count += 1
                     except Exception as e:
                         logger.warning(f"Tozalashda xatolik {file}: {e}")
-
+    
+    if deleted_count > 0:
+        logger.info(f"{deleted_count} ta eski fayl tozalandi")
 
 # ========== TELEGRAM BOT HANDLERLARI ==========
 
@@ -252,60 +386,90 @@ def cleanup_old_files(max_age_hours: int = 24):
 async def cmd_start(message: Message):
     """Start komandasi"""
     welcome_text = """
-    📎 *File Compressor Bot*
+📎 *File Compressor Bot*
 
-    Menga DOCX, PPTX yoki PDF fayl yuboring, men uni siqib (compress) qilib,
-    ZIPlab qaytarib beraman!
+Menga DOCX, PPTX yoki PDF fayl yuboring, men uni siqib (compress) qilib,
+ZIPlab qaytarib beraman!
 
-    *Qanday ishlaydi:*
-    1. Menga fayl yuboring
-    2. Men faylni siqaman
-    3. Siqilgan faylni ZIP qilib qaytaraman
+*Qanday ishlaydi:*
+1️⃣ Menga fayl yuboring
+2️⃣ Men faylni siqaman
+3️⃣ Siqilgan faylni ZIP qilib qaytaraman
 
-    *Natijalar:*
-    - PDF: 50-80% gacha kichrayadi
-    - DOCX/PPTX: Rasmlar siqiladi
+*Natijalar:*
+• PDF: 50-80% gacha kichrayadi
+• DOCX/PPTX: Rasmlar siqiladi
 
-    *Komandalar:*
-    /start - Botni qayta ishga tushirish
-    /help - Yordam
-    /stats - Statistika
+*Komandalar:*
+/start - Botni qayta ishga tushirish
+/help - Yordam
+/stats - Statistika
+/system - Tizim ma'lumoti
 
-    *Eslatma:* Fayl hajmi 50MB dan oshmasligi kerak!
-    """
+*Eslatma:* Fayl hajmi 50MB dan oshmasligi kerak!
+"""
     await message.answer(welcome_text, parse_mode="Markdown")
-
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     """Help komandasi"""
     help_text = """
-    🤖 *Yordam*
+🤖 *Yordam*
 
-    *Qo'llanma:*
-    • Menga istalgan DOCX, PPTX yoki PDF faylni yuboring
-    • Avtomatik ravishda siqib, ZIP qilib yuboraman
+*Qo'llanma:*
+• Menga istalgan DOCX, PPTX yoki PDF faylni yuboring
+• Avtomatik ravishda siqib, ZIP qilib yuboraman
 
-    *Qo'llab-quvvatlanadigan formatlar:*
-    • 📄 PDF - Ghostscript orqali siqiladi
-    • 📝 DOCX - Ichidagi rasmlar siqiladi
-    • 📊 PPTX - Ichidagi rasmlar siqiladi
+*Qo'llab-quvvatlanadigan formatlar:*
+📄 PDF - Ghostscript orqali siqiladi
+📝 DOCX - Ichidagi rasmlar siqiladi
+📊 PPTX - Ichidagi rasmlar siqiladi
 
-    *PDF siqish darajalari:*
-    - screen: eng kichik hajm (72 dpi)
-    - ebook: o'rtacha (150 dpi)
-    - printer: yuqori sifat (300 dpi)
+*PDF siqish darajalari:*
+• screen - eng kichik hajm (72 dpi)
+• ebook - o'rtacha (150 dpi)  
+• printer - yuqori sifat (300 dpi)
+• prepress - eng yuqori sifat
 
-    PDF uchun: /compress_pdf [screen|ebook|printer]
+PDF uchun: `/compress_pdf [screen|ebook|printer|prepress]`
 
-    *Cheklovlar:*
-    • Maksimal fayl hajmi: 50MB
-    • Bot faqat bitta faylni qabul qiladi
-    
-    /stats - Bot statistikasini ko'rish
-    """
+*Cheklovlar:*
+• Maksimal fayl hajmi: 50MB
+• Bot faqat bitta faylni qabul qiladi
+
+/stats - Bot statistikasini ko'rish
+/system - Tizim ma'lumoti
+"""
     await message.answer(help_text, parse_mode="Markdown")
 
+@dp.message(Command("system"))
+async def cmd_system(message: Message):
+    """Tizim ma'lumoti"""
+    info = get_system_info()
+    
+    gs_status = "✅ O'rnatilgan" if info["ghostscript"] else "❌ O'rnatilmagan"
+    
+    system_text = f"""
+🖥️ *Tizim Ma'lumoti*
+
+• Operatsion tizim: `{info['os']}`
+• Platforma: `{info['platform'][:50]}`
+• Python versiya: `{info['python_version']}`
+
+📦 *Ghostscript:*
+• Holat: {gs_status}
+• Joylashuv: `{info['ghostscript'] or 'Topilmadi'}`
+
+📁 *Papkalar:*
+• Vaqtinchalik: `{info['temp_dir']}`
+• Chiqish: `{info['output_dir']}`
+
+⚙️ *Sozlamalar:*
+• Maksimal hajm: {format_size(MAX_FILE_SIZE)}
+• PDF sifati: `{PDF_QUALITY}`
+• Tozalash vaqti: `{CLEANUP_HOURS} soat`
+"""
+    await message.answer(system_text, parse_mode="Markdown")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -314,44 +478,52 @@ async def cmd_stats(message: Message):
     cleanup_old_files()
     
     # Papkalardagi fayllar soni
-    temp_count = len(list(TEMP_DIR.glob("*"))) if TEMP_DIR.exists() else 0
-    compressed_count = len(list(COMPRESSED_DIR.glob("*"))) if COMPRESSED_DIR.exists() else 0
+    temp_files = list(TEMP_DIR.glob("*")) if TEMP_DIR.exists() else []
+    output_files = list(OUTPUT_DIR.glob("*")) if OUTPUT_DIR.exists() else []
+    
+    temp_count = len([f for f in temp_files if f.is_file()])
+    output_count = len([f for f in output_files if f.is_file()])
     
     # Diskda band qilingan joy
-    temp_size = sum(f.stat().st_size for f in TEMP_DIR.glob("*")) if TEMP_DIR.exists() else 0
-    compressed_size = sum(f.stat().st_size for f in COMPRESSED_DIR.glob("*")) if COMPRESSED_DIR.exists() else 0
+    temp_size = sum(f.stat().st_size for f in temp_files if f.is_file())
+    output_size = sum(f.stat().st_size for f in output_files if f.is_file())
     
     stats_text = f"""
-    📊 *Bot Statistikasi*
-    
-    ⏳ Kutilayotgan fayllar: {temp_count}
-    📦 Siqilgan fayllar: {compressed_count}
-    💾 Vaqtinchalik joy: {format_size(temp_size)}
-    💿 Siqilgan fayllar hajmi: {format_size(compressed_size)}
-    
-    *Qo'llab-quvvatlanadigan formatlar:* PDF, DOCX, PPTX
-    """
-    await message.answer(stats_text, parse_mode="Markdown")
+📊 *Bot Statistikasi*
 
+⏳ Kutilayotgan fayllar: `{temp_count}`
+📦 Siqilgan fayllar: `{output_count}`
+💾 Vaqtinchalik joy: `{format_size(temp_size)}`
+💿 Siqilgan fayllar hajmi: `{format_size(output_size)}`
+
+📁 Papkalar:
+• Temp: `{TEMP_DIR}`
+• Output: `{OUTPUT_DIR}`
+
+🔧 Qo'llab-quvvatlanadigan formatlar: PDF, DOCX, PPTX
+"""
+    await message.answer(stats_text, parse_mode="Markdown")
 
 @dp.message(Command("compress_pdf"))
 async def cmd_compress_pdf(message: Message):
     """PDF siqish darajasini o'zgartirish"""
     args = message.text.split()
-    quality = args[1] if len(args) > 1 else "screen"
+    quality = args[1] if len(args) > 1 else None
     
-    if quality not in ["screen", "ebook", "printer", "prepress"]:
+    if quality and quality not in ["screen", "ebook", "printer", "prepress"]:
         await message.answer("❌ Noto'g'ri parametr! Qabul qilinadiganlar: screen, ebook, printer, prepress")
         return
     
-    # Foydalanuvchi sozlamalarini saqlash (oddiy holat uchun dict)
+    # Foydalanuvchi sozlamalarini saqlash
     if not hasattr(cmd_compress_pdf, "user_settings"):
         cmd_compress_pdf.user_settings = {}
     
-    cmd_compress_pdf.user_settings[message.from_user.id] = {"pdf_quality": quality}
-    
-    await message.answer(f"✅ PDF siqish darajasi '{quality}' ga o'rnatildi!")
-
+    if quality:
+        cmd_compress_pdf.user_settings[message.from_user.id] = {"pdf_quality": quality}
+        await message.answer(f"✅ PDF siqish darajasi '{quality}' ga o'rnatildi!")
+    else:
+        current = cmd_compress_pdf.user_settings.get(message.from_user.id, {}).get("pdf_quality", PDF_QUALITY)
+        await message.answer(f"📊 Hozirgi PDF siqish darajasi: `{current}`\n\nO'zgartirish uchun: `/compress_pdf [screen|ebook|printer|prepress]`", parse_mode="Markdown")
 
 @dp.message(lambda message: message.document)
 async def handle_document(message: Message):
@@ -362,20 +534,18 @@ async def handle_document(message: Message):
     
     # Fayl hajmini tekshirish
     if file_size > MAX_FILE_SIZE:
-        await message.answer(f"❌ Fayl juda katta! Maksimal hajm: 50MB. Sizning faylingiz: {format_size(file_size)}")
+        await message.answer(f"❌ Fayl juda katta! Maksimal hajm: {format_size(MAX_FILE_SIZE)}. Sizning faylingiz: {format_size(file_size)}")
         return
     
     # Fayl kengaytmasini tekshirish
     file_ext = Path(file_name).suffix.lower()
     
     if file_ext not in ['.pdf', '.docx', '.pptx']:
-        await message.answer(f"❌ {file_ext} format qo'llab-quvvatlanmaydi.\n\n"
-                              f"Qo'llab-quvvatlanadigan formatlar: .pdf, .docx, .pptx")
+        await message.answer(f"❌ `{file_ext}` format qo'llab-quvvatlanmaydi.\n\nQo'llab-quvvatlanadigan formatlar: .pdf, .docx, .pptx", parse_mode="Markdown")
         return
     
     # Jarayon boshlanganligi haqida xabar
-    status_msg = await message.answer(f"⏳ Fayl qabul qilindi. Siqish boshlanmoqda...\n"
-                                       f"📁 {file_name} ({format_size(file_size)})")
+    status_msg = await message.answer(f"⏳ Fayl qabul qilindi. Siqish boshlanmoqda...\n📁 `{file_name}` ({format_size(file_size)})", parse_mode="Markdown")
     
     # Faylni yuklab olish
     file_id = document.file_id
@@ -387,7 +557,7 @@ async def handle_document(message: Message):
     # Unikal fayl nomi yaratish
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     original_file = TEMP_DIR / f"original_{timestamp}_{file_name}"
-    compressed_file = COMPRESSED_DIR / f"compressed_{timestamp}_{file_name}"
+    compressed_file = OUTPUT_DIR / f"compressed_{timestamp}_{file_name}"
     
     try:
         # Faylni yuklab olish
@@ -399,10 +569,9 @@ async def handle_document(message: Message):
         
         if file_ext == '.pdf':
             # Foydalanuvchi sozlamalarini olish
-            pdf_quality = "screen"
+            pdf_quality = None
             if hasattr(cmd_compress_pdf, "user_settings"):
-                user_settings = cmd_compress_pdf.user_settings.get(message.from_user.id, {})
-                pdf_quality = user_settings.get("pdf_quality", "screen")
+                pdf_quality = cmd_compress_pdf.user_settings.get(message.from_user.id, {}).get("pdf_quality")
             
             success, result_message = compress_pdf(original_file, compressed_file, pdf_quality)
         
@@ -435,45 +604,59 @@ async def handle_document(message: Message):
         
         await status_msg.delete()
         
+        # Tozalash
+        if original_file.exists():
+            original_file.unlink()
+        if compressed_file.exists():
+            compressed_file.unlink()
+        if zip_path.exists():
+            zip_path.unlink()
+        
     except Exception as e:
         logger.error(f"Qayta ishlashda xatolik: {e}")
         await status_msg.edit_text(f"❌ Kutilmagan xatolik yuz berdi: {str(e)[:200]}")
-    
-    finally:
+        
         # Tozalash
         try:
             if original_file.exists():
                 original_file.unlink()
             if compressed_file.exists():
                 compressed_file.unlink()
-        except Exception as e:
-            logger.warning(f"Tozalashda xatolik: {e}")
-
+        except:
+            pass
 
 @dp.message()
 async def handle_unknown(message: Message):
     """Tanilmagan xabarlar"""
-    await message.answer("❓ Tushunarsiz buyruq. Yordam uchun /help yuboring.\n\n"
-                         "Yoki menga to'g'ridan-to'g'ri DOCX, PPTX yoki PDF fayl yuboring!")
-
+    await message.answer("❓ Tushunarsiz buyruq. Yordam uchun /help yuboring.\n\nYoki menga to'g'ridan-to'g'ri DOCX, PPTX yoki PDF fayl yuboring!")
 
 # ========== ASOSIY ISHGA TUSHIRISH ==========
 
 async def main():
     """Botni ishga tushirish"""
-    print("🤖 Bot ishga tushmoqda...")
+    print("=" * 50)
+    print("🤖 File Compressor Bot ishga tushmoqda...")
+    print("=" * 50)
     
     # Papkalarni tayyorlash
     ensure_directories()
     
-    # Eski fayllarni tozalash (startda)
+    # Eski fayllarni tozalash
     cleanup_old_files()
+    
+    # Tizim ma'lumotini chiqarish
+    info = get_system_info()
+    print(f"✅ Bot token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:] if len(BOT_TOKEN) > 15 else ''}")
+    print(f"✅ Ghostscript: {info['ghostscript'] or 'TOPILMADI'}")
+    print(f"✅ Vaqtinchalik papka: {TEMP_DIR}")
+    print(f"✅ Chiqish papkasi: {OUTPUT_DIR}")
+    print(f"✅ Maksimal fayl hajmi: {format_size(MAX_FILE_SIZE)}")
+    print("=" * 50)
+    print("🎯 Bot ishga tushdi! Telegramda @ ni tekshiring...")
+    print("=" * 50)
     
     # Botni ishga tushirish
     await dp.start_polling(bot)
-    
-    print("✅ Bot ishga tushdi!")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
