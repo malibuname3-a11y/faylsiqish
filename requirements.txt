@@ -1,3 +1,4 @@
 aiogram>=3.0.0
 Pillow>=10.0.0
-python-docx>=0.8.11
+img2pdf>=0.4.4
+pypdf>=3.0.0   # (PDF va DOCX/PPTX siqishda kerak, lekin faqat sahifalarni o‘qish uchun)
