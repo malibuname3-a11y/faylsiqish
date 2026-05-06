@@ -13,6 +13,7 @@ from aiogram.types import Message, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramNetworkError
 from PIL import Image
 import img2pdf
 from pypdf import PdfWriter, PdfReader
@@ -28,7 +29,7 @@ if not BOT_TOKEN:
     raise ValueError("Token topilmadi")
 
 # ========== SOZLAMALAR ==========
-BASE_DIR = Path(tempfile.gettempdir()) / "image_to_pdf_bot"
+BASE_DIR = Path(tempfile.gettempdir()) / "full_zip_bot"
 TEMP_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -42,11 +43,10 @@ session = AiohttpSession(timeout=API_TIMEOUT)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"), session=session)
 dp = Dispatcher()
 
-# Foydalanuvchi seanslari: { user_id: {"files": [...], "mode": "fast"/"compress", "auto": bool} }
-# files: har bir element {"path": str, "name": str, "type": str, "size": int}
-# type: "pdf", "docx", "pptx", "image"
+# Foydalanuvchi ma'lumotlari
 user_sessions: Dict[int, Dict] = {}
 
+# ========== YORDAMCHI FUNKSIYALAR ==========
 def ensure_dirs():
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,17 @@ def format_size(size: int) -> str:
         size /= 1024.0
     return f"{size:.2f} GB"
 
-# ========== SIQISH FUNKSIYALARI (DOCX/PPTX) ==========
+# ========== RASMLARNI BIRTA PDF GA AYLANTIRISH ==========
+def images_to_pdf(image_paths: List[Path], output_pdf: Path) -> bool:
+    try:
+        with open(output_pdf, "wb") as f:
+            f.write(img2pdf.convert([str(p) for p in image_paths]))
+        return True
+    except Exception as e:
+        logger.error(f"Rasmlarni PDF ga birlashtirish xatosi: {e}")
+        return False
+
+# ========== DOCX/PPTX ICHIDAGI RASMLARNI SIQISH ==========
 def compress_image_file(img_path: Path, quality: int = 85) -> bool:
     try:
         with Image.open(img_path) as img:
@@ -97,39 +107,33 @@ def compress_docx_pptx(zip_path: Path, quality: int = 85) -> int:
         shutil.rmtree(temp_extract, ignore_errors=True)
     return count
 
-def compress_docx_pptx_file(src: Path, dst: Path, file_type: str) -> Tuple[bool, str, int]:
+def process_docx_pptx(src: Path, dst: Path, file_type: str, mode: str) -> Tuple[bool, str, int]:
     try:
         shutil.copy2(src, dst)
-        img_count = compress_docx_pptx(dst)
-        orig = src.stat().st_size
-        new = dst.stat().st_size
-        reduction = (1 - new/orig) * 100 if orig else 0
-        msg = f"✅ {file_type.upper()} siqildi! {format_size(new)} ({reduction:.1f}% kichraydi) – {img_count} rasm optimallashtirildi."
-        return True, msg, new
+        if mode == "compress":
+            img_count = compress_docx_pptx(dst)
+            orig = src.stat().st_size
+            new = dst.stat().st_size
+            reduction = (1 - new/orig) * 100 if orig else 0
+            msg = f"✅ {file_type.upper()} siqildi! {format_size(new)} ({reduction:.1f}% kichraydi) – {img_count} rasm optimallashtirildi."
+            return True, msg, new
+        else:
+            size = dst.stat().st_size
+            msg = f"📄 {file_type.upper()}: {src.name} → {format_size(size)} (o‘zgarishsiz)"
+            return True, msg, size
     except Exception as e:
         return False, f"❌ Xatolik: {str(e)}", 0
 
-def process_file_fast(src: Path, dst: Path, name: str, category: str) -> Tuple[bool, str, int]:
+# ========== O‘ZGARMAS PDF FAYLLARNI NUSXALASH ==========
+def copy_pdf(src: Path, dst: Path, name: str) -> Tuple[bool, str, int]:
     try:
         shutil.copy2(src, dst)
         size = dst.stat().st_size
-        return True, f"📄 {category}: {name} → {format_size(size)}", size
+        return True, f"📄 PDF: {name} → {format_size(size)}", size
     except Exception as e:
         return False, f"❌ {name}: {str(e)}", 0
 
-# ========== RASMLARNI BIRTA PDF GA AYLANTIRISH ==========
-def images_to_single_pdf(image_paths: List[Path], output_pdf_path: Path) -> bool:
-    """Bir nechta rasm fayllarini bitta PDF ga birlashtiradi (img2pdf)"""
-    try:
-        # img2pdf har bir rasmni alohida sahifa qilib birlashtiradi
-        with open(output_pdf_path, "wb") as f:
-            f.write(img2pdf.convert([str(p) for p in image_paths]))
-        return True
-    except Exception as e:
-        logger.error(f"Rasmlarni PDF ga birlashtirish xatosi: {e}")
-        return False
-
-# ========== ZIP YARATISH (ASOSIY FUNKSIYA) ==========
+# ========== ZIP YARATISH ==========
 def create_zip(files_data: List[Dict], zip_name: str) -> Path:
     zip_path = OUTPUT_DIR / zip_name
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -146,7 +150,7 @@ def cleanup_user(user_id: int):
                 pass
         del user_sessions[user_id]
 
-# ========== ASOSIY QADOQLASH FUNKSIYASI ==========
+# ========== ASOSIY ISHLOV BERISH ==========
 async def pack_files(user_id: int, message: Message):
     session_data = user_sessions.get(user_id, {"files": []})
     files = session_data.get("files", [])
@@ -158,92 +162,80 @@ async def pack_files(user_id: int, message: Message):
     status = await message.answer(f"⏳ {len(files)} ta fayl qayta ishlanmoqda (rejim: {mode})...")
     ensure_dirs()
 
-    # 1. Barcha fayllarni turi bo‘yicha ajratish
-    pdf_files = []      # (path, name)
-    docx_files = []     # (path, name)
-    pptx_files = []     # (path, name)
-    image_files = []    # (path, name)
-
+    # Ajratish
+    pdf_list = []        # (src, name)
+    docx_list = []       # (src, name)
+    pptx_list = []       # (src, name)
+    image_list = []      # (src, name)
     for f in files:
-        p = Path(f["path"])
+        src = Path(f["path"])
         name = f["name"]
-        t = f["type"]
-        if t == "pdf":
-            pdf_files.append((p, name))
-        elif t == "docx":
-            docx_files.append((p, name))
-        elif t == "pptx":
-            pptx_files.append((p, name))
-        elif t == "image":
-            image_files.append((p, name))
+        typ = f["type"]
+        if typ == "pdf":
+            pdf_list.append((src, name))
+        elif typ == "docx":
+            docx_list.append((src, name))
+        elif typ == "pptx":
+            pptx_list.append((src, name))
+        elif typ == "image":
+            image_list.append((src, name))
 
-    processed_items = []  # {"path": Path, "arcname": str}
+    processed_items = []
     results = []
     total_original = sum(f["size"] for f in files)
     total_processed = 0
 
-    # 2. Rasmlarni bitta PDF ga birlashtirish (agar mavjud bo‘lsa)
-    if image_files:
-        combined_pdf_path = OUTPUT_DIR / f"combined_images_{datetime.now().timestamp()}.pdf"
-        image_paths = [p for p, _ in image_files]
-        if images_to_single_pdf(image_paths, combined_pdf_path):
-            size = combined_pdf_path.stat().st_size
-            processed_items.append({
-                "path": combined_pdf_path,
-                "arcname": "IMAGES/combined_images.pdf"
-            })
+    # 1. Rasmlarni bitta PDF ga birlashtirish
+    if image_list:
+        combined_pdf = OUTPUT_DIR / f"combined_images_{datetime.now().timestamp()}.pdf"
+        img_paths = [p for p, _ in image_list]
+        if images_to_pdf(img_paths, combined_pdf):
+            size = combined_pdf.stat().st_size
+            processed_items.append({"path": combined_pdf, "arcname": "IMAGES/combined_images.pdf"})
             total_processed += size
-            results.append(f"🖼️ {len(image_files)} ta rasm → bitta PDF ({format_size(size)})")
+            results.append(f"🖼️ {len(image_list)} ta rasm → bitta PDF ({format_size(size)})")
         else:
-            results.append(f"❌ {len(image_files)} ta rasmni birlashtirib bo‘lmadi")
-            # xatolikda har bir rasmni alohida qo‘shish mumkin, lekin oddiy usulda xatoni aytamiz
-            for img_path, img_name in image_files:
-                # agar birlashmagan bo‘lsa, alohida qo‘shish kerakmi? hozircha qo‘shmaymiz
-                pass
+            results.append(f"❌ {len(image_list)} ta rasmni birlashtirib bo‘lmadi")
 
-    # 3. PDF fayllar (o‘zgarishsiz)
-    for src, name in pdf_files:
+    # 2. PDF fayllar
+    for src, name in pdf_list:
         dst = OUTPUT_DIR / f"pdf_{datetime.now().timestamp()}_{name}"
-        shutil.copy2(src, dst)
-        size = dst.stat().st_size
-        processed_items.append({"path": dst, "arcname": f"PDF/{name}"})
-        total_processed += size
-        results.append(f"📄 PDF: {name} → {format_size(size)}")
-
-    # 4. DOCX fayllarni siqish/fast
-    for src, name in docx_files:
-        out = OUTPUT_DIR / f"processed_{datetime.now().timestamp()}_{name}"
-        if mode == "compress":
-            ok, msg, sz = compress_docx_pptx_file(src, out, "docx")
-        else:
-            ok, msg, sz = process_file_fast(src, out, name, "DOCX")
+        ok, msg, sz = copy_pdf(src, dst, name)
         if ok:
-            processed_items.append({"path": out, "arcname": f"DOCX/{name}"})
+            processed_items.append({"path": dst, "arcname": f"PDF/{name}"})
             total_processed += sz
             results.append(msg)
         else:
             results.append(f"❌ {name}: {msg}")
 
-    # 5. PPTX fayllarni siqish/fast
-    for src, name in pptx_files:
-        out = OUTPUT_DIR / f"processed_{datetime.now().timestamp()}_{name}"
-        if mode == "compress":
-            ok, msg, sz = compress_docx_pptx_file(src, out, "pptx")
-        else:
-            ok, msg, sz = process_file_fast(src, out, name, "PPTX")
+    # 3. DOCX fayllar
+    for src, name in docx_list:
+        dst = OUTPUT_DIR / f"docx_{datetime.now().timestamp()}_{name}"
+        ok, msg, sz = process_docx_pptx(src, dst, "docx", mode)
         if ok:
-            processed_items.append({"path": out, "arcname": f"PPTX/{name}"})
+            processed_items.append({"path": dst, "arcname": f"DOCX/{name}"})
             total_processed += sz
             results.append(msg)
         else:
-            results.append(f"❌ {name}: {msg}")
+            results.append(msg)
+
+    # 4. PPTX fayllar
+    for src, name in pptx_list:
+        dst = OUTPUT_DIR / f"pptx_{datetime.now().timestamp()}_{name}"
+        ok, msg, sz = process_docx_pptx(src, dst, "pptx", mode)
+        if ok:
+            processed_items.append({"path": dst, "arcname": f"PPTX/{name}"})
+            total_processed += sz
+            results.append(msg)
+        else:
+            results.append(msg)
 
     if not processed_items:
         await status.edit_text("❌ Hech qanday fayl qayta ishlanmadi.")
         return
 
-    # Yakuniy ZIP arxiv
-    zip_name = f"files_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    # ZIP arxiv
+    zip_name = f"processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
     zip_path = create_zip(processed_items, zip_name)
 
     summary = "📊 **Hisobot:**\n" + "\n".join(results[:20])
@@ -342,15 +334,16 @@ async def handle_photo(msg: Message):
 @dp.message(Command("start"))
 async def start_cmd(msg: Message):
     await msg.answer(
-        "📦 **Ko‘p funksiyali ZIP bot (rasmlar bitta PDF bo‘ladi)**\n\n"
-        "🖼️ Yuborilgan barcha rasmlar (photo yoki document) **bitta PDF** faylga birlashtiriladi.\n"
-        "📄 PDF, DOCX, PPTX fayllar o‘z papkalarida saqlanadi.\n"
-        "🔹 `/pack` – barcha fayllarni ZIP arxivga solib yuboradi.\n"
-        "🔹 `/mode compress` – DOCX/PPTX ichidagi rasmlarni siqadi.\n"
-        "🔹 `/mode fast` – hech qanday siqish (tez).\n"
-        "🔹 `/auto` – 3 ta fayldan keyin avtomatik ZIP.\n"
-        "🔹 `/list`, `/clear` – fayllar ro‘yxati va tozalash.\n\n"
-        "Hozirgi rejim: **fast**"
+        "📦 **To‘liq funksiyali ZIP bot**\n\n"
+        "• PDF, DOCX, PPTX va rasmlarni qabul qilaman.\n"
+        "• Rasmlar → bitta PDF (`IMAGES/combined_images.pdf`)\n"
+        "• DOCX/PPTX ichidagi rasmlar siqilishi mumkin (`/mode compress`)\n"
+        "• Natija – bitta ZIP arxiv (kategoriyalarga ajratilgan)\n\n"
+        "🔹 `/mode compress|fast` – siqish yoki tez rejim\n"
+        "🔹 `/auto` – 3 ta faylda avtomatik ZIP\n"
+        "🔹 `/pack` – qo‘lda ZIP olish\n"
+        "🔹 `/list`, `/clear`, `/stats`\n\n"
+        "Hozirgi rejim: fast"
     )
 
 @dp.message(Command("mode"))
@@ -373,7 +366,7 @@ async def auto_cmd(msg: Message):
     current = user_sessions[uid]["auto"]
     user_sessions[uid]["auto"] = not current
     status = "YOQILDI" if not current else "O‘CHIRILDI"
-    await msg.answer(f"⚙️ Avtomatik ZIP rejimi {status}. (3 ta faylda avtomatik)")
+    await msg.answer(f"⚙️ Avtomatik rejim {status} ({AUTO_THRESHOLD} ta faylda)")
 
 @dp.message(Command("pack"))
 async def pack_cmd(msg: Message):
@@ -387,22 +380,30 @@ async def list_cmd(msg: Message):
         await msg.answer("📭 Saqlangan fayl yo‘q.")
         return
     total = sum(f["size"] for f in files)
-    text = f"📁 Saqlangan fayllar ({len(files)}):\n" + "\n".join(f"• {f['name']} ({format_size(f['size'])})" for f in files)
+    text = f"📁 {len(files)} ta fayl:\n" + "\n".join(f"• {f['name']} ({format_size(f['size'])})" for f in files)
     text += f"\n\n📦 Umumiy hajm: {format_size(total)}"
     await msg.answer(text)
 
 @dp.message(Command("clear"))
 async def clear_cmd(msg: Message):
     cleanup_user(msg.from_user.id)
-    await msg.answer("🧹 Barcha fayllar tozalandi.")
+    await msg.answer("🧹 Tozalandi.")
+
+@dp.message(Command("stats"))
+async def stats_cmd(msg: Message):
+    ensure_dirs()
+    temp_cnt = sum(1 for _ in TEMP_DIR.iterdir() if _.is_file())
+    out_cnt = sum(1 for _ in OUTPUT_DIR.iterdir() if _.is_file())
+    temp_sz = sum(f.stat().st_size for f in TEMP_DIR.iterdir() if f.is_file())
+    out_sz = sum(f.stat().st_size for f in OUTPUT_DIR.iterdir() if f.is_file())
+    await msg.answer(f"📊 Statistika:\n⏳ Yuklangan: {temp_cnt} fayl, {format_size(temp_sz)}\n📦 Qayta ishlangan: {out_cnt} fayl, {format_size(out_sz)}")
 
 @dp.message()
 async def unknown(msg: Message):
     await msg.answer("❓ Tushunarsiz. Fayl yoki rasm yuboring.")
 
-# ========== ISHGA TUSHIRISH ==========
 async def main():
-    print("🚀 Bot ishga tushdi (rasmlar bitta PDF, boshqa funksiyalar saqlangan).")
+    print("🚀 Bot ishga tushdi (barcha funksiyalar qo‘shilgan).")
     ensure_dirs()
     await dp.start_polling(bot)
 
